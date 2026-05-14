@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PixelGraph Demo</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar" aria-label="Application toolbar" data-i18n-attr="aria-label:aria.appToolbar">
+        <div class="brand-block">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <p class="eyebrow" data-i18n="brand.eyebrow">Local diagram workbench</p>
+            <h1>PixelGraph</h1>
+          </div>
+        </div>
+
+        <nav class="diagram-tabs" aria-label="Diagram type" data-i18n-attr="aria-label:aria.diagramType">
+          <button class="tab is-active" type="button" data-type="er">ER</button>
+          <button class="tab" type="button" data-type="class">Class</button>
+          <button class="tab" type="button" data-type="sequence">Sequence</button>
+          <button class="tab" type="button" data-type="state">State</button>
+          <button class="tab" type="button" data-type="flowchart" data-i18n="tabs.flow">Flow</button>
+        </nav>
+
+        <div class="topbar-actions">
+          <button class="secondary-button language-button" type="button" id="languageToggle" aria-label="Switch language" data-i18n-attr="aria-label:aria.switchLanguage">
+            EN
+          </button>
+          <button class="icon-button" type="button" id="themeToggle" aria-label="Toggle theme" title="Toggle theme" data-i18n-attr="aria-label:aria.toggleTheme;title:aria.toggleTheme">
+            <span class="theme-glyph" aria-hidden="true"></span>
+          </button>
+          <button class="primary-button" type="button" id="quickExport" data-i18n="actions.exportSvg">Export SVG</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="editor-panel" aria-labelledby="editorTitle">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow" data-i18n="editor.eyebrow">Mermaid source</p>
+              <h2 id="editorTitle" data-i18n="editor.title">Edit diagram text</h2>
+            </div>
+            <div class="status-pill" id="renderStatus">
+              <span class="status-dot" aria-hidden="true"></span>
+              <span>Ready</span>
+            </div>
+          </div>
+
+          <div class="template-strip" aria-label="Templates" data-i18n-attr="aria-label:aria.templates">
+            <button class="template-button is-active" type="button" data-template="default" data-i18n="templates.default">Default</button>
+            <button class="template-button" type="button" data-template="compact" data-i18n="templates.compact">Compact</button>
+            <button class="template-button" type="button" data-template="review" data-i18n="templates.review">Review</button>
+          </div>
+
+          <label class="editor-label" for="sourceEditor" data-i18n="editor.source">Source</label>
+          <textarea id="sourceEditor" spellcheck="false" aria-describedby="syntaxHint"></textarea>
+
+          <div class="editor-footer">
+            <p id="syntaxHint" data-i18n="editor.syntaxHint">Syntax looks stable. Preview updates after a short debounce.</p>
+            <span id="lineCount">0 lines</span>
+          </div>
+        </section>
+
+        <section class="preview-panel" aria-labelledby="previewTitle">
+          <div class="panel-header preview-header">
+            <div>
+              <p class="eyebrow" data-i18n="preview.eyebrow">Live preview</p>
+              <h2 id="previewTitle">Customer Orders ER Map</h2>
+            </div>
+            <div class="zoom-controls" aria-label="Zoom controls" data-i18n-attr="aria-label:aria.zoomControls">
+              <button class="icon-button" type="button" data-zoom="out" aria-label="Zoom out" data-i18n-attr="aria-label:aria.zoomOut">-</button>
+              <span id="zoomValue">100%</span>
+              <button class="icon-button" type="button" data-zoom="in" aria-label="Zoom in" data-i18n-attr="aria-label:aria.zoomIn">+</button>
+            </div>
+          </div>
+
+          <div class="canvas-shell">
+            <div class="canvas-meta">
+              <span id="diagramKind">Entity relationship</span>
+              <span id="saveState">Saved locally</span>
+            </div>
+            <div class="diagram-stage" id="diagramStage" aria-live="polite"></div>
+          </div>
+
+          <div class="export-row" aria-label="Export actions" data-i18n-attr="aria-label:aria.exportActions">
+            <button class="secondary-button" type="button" data-export="SVG">SVG</button>
+            <button class="secondary-button" type="button" data-export="PNG">PNG</button>
+            <button class="secondary-button" type="button" data-export="Markdown">Markdown</button>
+            <p id="exportNotice" data-i18n="export.notice">Exports are simulated in this visual demo.</p>
+          </div>
+        </section>
+      </main>
+
+      <aside class="status-bar" aria-label="Project status" data-i18n-attr="aria-label:aria.projectStatus">
+        <div>
+          <span class="status-label" data-i18n="status.storage">Storage</span>
+          <strong data-i18n="status.browserDraft">Browser draft</strong>
+        </div>
+        <div>
+          <span class="status-label" data-i18n="status.renderer">Renderer</span>
+          <strong data-i18n="status.mockRenderer">Mock Mermaid SVG</strong>
+        </div>
+        <div>
+          <span class="status-label" data-i18n="status.errorSample">Error sample</span>
+          <strong id="errorSample">No parser errors</strong>
+        </div>
+      </aside>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
