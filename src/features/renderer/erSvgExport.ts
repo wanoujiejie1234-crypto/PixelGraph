@@ -25,11 +25,13 @@ const colors = {
   surfaceSoft: '#eef2ec',
 };
 
-function displayColors(node?: ErGraphNode): { accent: string; fill: string; stroke: string } {
+function displayColors(node?: ErGraphNode): { accent: string; fill: string; fontSize: number; stroke: string; text: string } {
   return {
     accent: String(node?.data.display.accentColor || '#507c69'),
     fill: String(node?.data.display.fillColor || '#ffffff'),
+    fontSize: Number(node?.data.display.fontSize || 15),
     stroke: String(node?.data.display.strokeColor || '#171817'),
+    text: String(node?.data.display.textColor || node?.data.display.strokeColor || '#171817'),
   };
 }
 
@@ -203,16 +205,21 @@ function renderEdges(nodesById: Map<string, ErGraphNode>, edges: ErGraphEdge[]):
       const points = anchors(nodeBounds(source), nodeBounds(target));
       const straight = edge.type === 'straight';
       const path = edgePath(points.start, points.end, straight);
-      const label = edge.label ? String(edge.label) : '';
+      const label = edge.data?.label !== undefined ? String(edge.data.label) : edge.label ? String(edge.label) : '';
+      const hasCustomOffset = Boolean(edge.data?.labelOffset);
+      const labelOffset = edge.data?.labelOffset ?? { x: 0, y: 0 };
+      const dx = points.end.x - points.start.x;
+      const dy = points.end.y - points.start.y;
+      const length = Math.hypot(dx, dy) || 1;
+      const sideOffset = hasCustomOffset ? { x: 0, y: 0 } : { x: (-dy / length) * 16, y: (dx / length) * 16 };
       const labelPoint = {
-        x: points.start.x + (points.end.x - points.start.x) / 2,
-        y: points.start.y + (points.end.y - points.start.y) / 2 - 8,
+        x: points.start.x + (points.end.x - points.start.x) / 2 + labelOffset.x + sideOffset.x,
+        y: points.start.y + (points.end.y - points.start.y) / 2 - 8 + labelOffset.y + sideOffset.y,
       };
 
       return `
         <g class="pg-edge">
           <path d="${path}" />
-          ${label ? `<rect class="pg-edge-label-bg" x="${labelPoint.x - 56}" y="${labelPoint.y - 14}" width="112" height="20" rx="5" />` : ''}
           ${label ? text(truncate(label, 18), labelPoint.x, labelPoint.y, 'pg-edge-label', 'text-anchor="middle"') : ''}
         </g>
       `;
@@ -245,17 +252,16 @@ export function exportErGraphToSvg(nodes: ErGraphNode[], edges: ErGraphEdge[], o
       .pg-badge.pg-pk { fill: #e4f0e8; }
       .pg-badge.pg-fk { fill: #edf0ec; }
       .pg-badge-text, .pg-table-title, .pg-field, .pg-type, .pg-muted, .pg-chen-label, .pg-edge-label { font-family: "Geist", "Segoe UI", Arial, sans-serif; }
-      .pg-table-title { fill: ${exportColors.stroke}; font-size: 15px; font-weight: 760; }
-      .pg-field { fill: ${exportColors.stroke}; font-size: 12px; font-family: "Geist Mono", "SFMono-Regular", Consolas, monospace; }
-      .pg-type, .pg-muted { fill: ${colors.muted}; font-size: 10px; font-family: "Geist Mono", "SFMono-Regular", Consolas, monospace; }
-      .pg-badge-text { fill: ${exportColors.accent}; font-size: 9px; font-weight: 800; }
+      .pg-table-title { fill: ${exportColors.text}; font-size: ${exportColors.fontSize}px; font-weight: 760; }
+      .pg-field { fill: ${exportColors.text}; font-size: ${Math.max(10, exportColors.fontSize - 3)}px; font-family: "Geist Mono", "SFMono-Regular", Consolas, monospace; }
+      .pg-type, .pg-muted { fill: ${colors.muted}; font-size: ${Math.max(9, exportColors.fontSize - 5)}px; font-family: "Geist Mono", "SFMono-Regular", Consolas, monospace; }
+      .pg-badge-text { fill: ${exportColors.accent}; font-size: ${Math.max(8, exportColors.fontSize - 6)}px; font-weight: 800; }
       .pg-chen-attribute { stroke: ${exportColors.accent}; fill: ${exportColors.fill}; }
       .pg-chen-attribute.pg-key { stroke-width: 2.2; }
       .pg-chen-relationship { fill: ${exportColors.fill}; stroke: ${exportColors.accent}; stroke-width: 2; }
-      .pg-chen-label { fill: ${exportColors.stroke}; font-size: 13px; font-weight: 760; }
+      .pg-chen-label { fill: ${exportColors.text}; font-size: ${Math.max(11, exportColors.fontSize - 1)}px; font-weight: 760; }
       .pg-edge path { fill: none; stroke: #66716a; stroke-width: 1.35; }
-      .pg-edge-label-bg { fill: ${colors.surface}; opacity: 0.92; }
-      .pg-edge-label { fill: ${colors.muted}; font-size: 10px; font-weight: 760; font-family: "Geist Mono", "SFMono-Regular", Consolas, monospace; }
+      .pg-edge-label { fill: ${exportColors.text}; font-size: ${Math.max(9, exportColors.fontSize - 5)}px; font-weight: 760; font-family: "Geist Mono", "SFMono-Regular", Consolas, monospace; }
     </style>
     <rect class="pg-bg" width="${width}" height="${height}" />
     <defs>

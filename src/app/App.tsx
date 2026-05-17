@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { ErrorBoundary } from './ErrorBoundary';
 import { getDiagramAdapter } from '../features/diagrams/adapters';
 import { diagramDefinitions, getDiagramDefinition } from '../features/diagrams/definitions';
 import type { DiagramTemplate, DiagramType, ErInputMode, RenderResult } from '../features/diagrams/types';
@@ -6,7 +7,8 @@ import { SourceEditor } from '../features/editor/SourceEditor';
 import { copySource, downloadMarkdown, downloadPng, downloadSvg, type ExportFormat } from '../features/export/exporters';
 import { messages, type Messages } from '../features/i18n/messages';
 import { DiagramViewport } from '../features/renderer/DiagramViewport';
-import { defaultMermaidStyleSettings, renderMermaid, type MermaidCurve, type MermaidStyleSettings } from '../features/renderer/mermaidRenderer';
+import { MermaidPreview } from '../features/renderer/MermaidPreview';
+import { defaultMermaidStyleSettings, getDiagramDirective, renderMermaid, type MermaidCurve, type MermaidStyleSettings } from '../features/renderer/mermaidRenderer';
 import { defaultErDisplaySettings, type ErDisplaySettings, SqlErCanvas } from '../features/renderer/SqlErCanvas';
 import {
   readStoredCanvasSettings,
@@ -39,9 +41,36 @@ const emptyRender: RenderResult = {
   svg: '',
 };
 
-const defaultCanvasSettings: StoredCanvasSettings = {
+const lightCanvasSettings: StoredCanvasSettings = {
+  editorTextColor: '#18181B',
   exportScale: 3,
   transparentExport: false,
+};
+
+const darkCanvasSettings: StoredCanvasSettings = {
+  editorTextColor: '#F2F4EE',
+  exportScale: 3,
+  transparentExport: false,
+};
+
+const lightMermaidStyleSettings = defaultMermaidStyleSettings;
+
+const darkMermaidStyleSettings: MermaidStyleSettings = {
+  ...defaultMermaidStyleSettings,
+  lineColor: '#9EC6AD',
+  nodeBorderColor: '#9EC6AD',
+  nodeFillColor: '#30362F',
+  textColor: '#F2F4EE',
+};
+
+const lightErDisplaySettings = defaultErDisplaySettings;
+
+const darkErDisplaySettings: ErDisplaySettings = {
+  ...defaultErDisplaySettings,
+  accentColor: '#9EC6AD',
+  fillColor: '#30362F',
+  strokeColor: '#F2F4EE',
+  textColor: '#F2F4EE',
 };
 
 const initialType = readStoredType() ?? 'er';
@@ -50,7 +79,7 @@ const initialTemplate = getTemplateById(initialDefinition.defaultTemplateId);
 
 function getInitialErMode(): ErInputMode {
   if (initialType !== 'er') return 'mermaid';
-  return initialTemplate?.erInputMode ?? readStoredErInputMode();
+  return readStoredErInputMode() ?? initialTemplate?.erInputMode ?? 'sql';
 }
 
 function getInitialCode(): string {
@@ -82,6 +111,28 @@ function formatSource(source: string): string {
     .trim();
 }
 
+function formatSqlSource(source: string): string {
+  return source
+    .replace(/\s*,\s*/gu, ',\n  ')
+    .replace(/\s+(CREATE\s+TABLE)\s+/giu, '\n\n$1 ')
+    .split('\n')
+    .map((line) => line.replace(/\s+$/u, ''))
+    .join('\n')
+    .trim();
+}
+
+function getSourcePlaceholder(type: DiagramType, erInputMode: ErInputMode, text: Messages): string {
+  if (type === 'er' && erInputMode === 'sql') return text.sqlPlaceholder;
+  const placeholders: Record<DiagramType, string> = {
+    class: text.classPlaceholder,
+    er: text.erMermaidPlaceholder,
+    flowchart: text.flowchartPlaceholder,
+    sequence: text.sequencePlaceholder,
+    state: text.statePlaceholder,
+  };
+  return placeholders[type];
+}
+
 function getLocalizedDescription(type: DiagramType, text: Messages): string {
   const descriptions: Record<DiagramType, string> = {
     class: text.diagramDescriptionClass,
@@ -95,24 +146,75 @@ function getLocalizedDescription(type: DiagramType, text: Messages): string {
 
 function getLocalizedTemplateName(template: DiagramTemplate, text: Messages): string {
   const names: Record<string, string> = {
-    'class-domain': text.templateClassDomain,
-    'class-renderer': text.templateClassRenderer,
-    'er-mermaid-orders': text.templateErMermaidOrders,
-    'er-sql-orders': text.templateErSqlOrders,
-    'flowchart-generation': text.templateFlowchartGeneration,
-    'flowchart-review': text.templateFlowchartReview,
-    'sequence-export': text.templateSequenceExport,
-    'sequence-login': text.templateSequenceLogin,
-    'state-draft': text.templateStateDraft,
-    'state-order': text.templateStateOrder,
+    'class-domain-model': text.templateClassDomain,
+    'class-rendering-workbench': text.templateClassRenderer,
+    'er-mermaid-commerce': text.templateErMermaidOrders,
+    'er-sql-commerce': text.templateErSqlOrders,
+    'flowchart-release-check': text.templateFlowchartReview,
+    'flowchart-rendering-decision': text.templateFlowchartGeneration,
+    'sequence-export-pipeline': text.templateSequenceExport,
+    'sequence-login-review': text.templateSequenceLogin,
+    'state-document-lifecycle': text.templateStateDraft,
+    'state-payment-flow': text.templateStateOrder,
   };
   return names[template.id] ?? template.name;
+}
+
+function replaceThemeDefault<T extends object>(current: T, previousDefaults: T, nextDefaults: T, keys: Array<keyof T>): T {
+  return keys.reduce((settings, key) => {
+    if (current[key] !== previousDefaults[key]) return settings;
+    return {
+      ...settings,
+      [key]: nextDefaults[key],
+    };
+  }, current);
+}
+
+function getThemeCanvasDefaults(theme: ThemeMode): StoredCanvasSettings {
+  return theme === 'dark' ? darkCanvasSettings : lightCanvasSettings;
+}
+
+function getThemeMermaidDefaults(theme: ThemeMode): MermaidStyleSettings {
+  return theme === 'dark' ? darkMermaidStyleSettings : lightMermaidStyleSettings;
+}
+
+function getThemeErDefaults(theme: ThemeMode): ErDisplaySettings {
+  return theme === 'dark' ? darkErDisplaySettings : lightErDisplaySettings;
+}
+
+function migrateCanvasSettings(settings: StoredCanvasSettings, theme: ThemeMode): StoredCanvasSettings {
+  const previous = theme === 'dark' ? lightCanvasSettings : darkCanvasSettings;
+  return replaceThemeDefault(settings, previous, getThemeCanvasDefaults(theme), ['editorTextColor']);
+}
+
+function migrateMermaidSettings(settings: MermaidStyleSettings, theme: ThemeMode): MermaidStyleSettings {
+  const previous = theme === 'dark' ? lightMermaidStyleSettings : darkMermaidStyleSettings;
+  return {
+    ...replaceThemeDefault(settings, previous, getThemeMermaidDefaults(theme), ['lineColor', 'nodeBorderColor', 'nodeFillColor', 'textColor']),
+    sequenceNumbers: true,
+  };
+}
+
+function migrateErSettings(settings: ErDisplaySettings, theme: ThemeMode): ErDisplaySettings {
+  const previous = theme === 'dark' ? lightErDisplaySettings : darkErDisplaySettings;
+  return replaceThemeDefault(settings, previous, getThemeErDefaults(theme), ['accentColor', 'fillColor', 'strokeColor', 'textColor']);
+}
+
+function getSourceActionLabel(type: DiagramType, erInputMode: ErInputMode, text: Messages): string {
+  if (type === 'er' && erInputMode === 'sql') return text.inputSqlEr;
+  if (type === 'er') return text.inputMermaidEr;
+  const labels: Record<Exclude<DiagramType, 'er'>, string> = {
+    class: text.inputClassDiagram,
+    flowchart: text.inputFlowchart,
+    sequence: text.inputSequenceDiagram,
+    state: text.inputStateDiagram,
+  };
+  return labels[type];
 }
 
 export function App() {
   const [diagramType, setDiagramType] = useState<DiagramType>(initialType);
   const [erInputMode, setErInputMode] = useState<ErInputMode>(getInitialErMode);
-  const [activeTemplateId, setActiveTemplateId] = useState(initialTemplate?.id ?? '');
   const [source, setSource] = useState(getInitialCode);
   const [renderResult, setRenderResult] = useState<RenderResult>(emptyRender);
   const [theme, setTheme] = useState<ThemeMode>(readStoredTheme);
@@ -124,10 +226,10 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exportSvg, setExportSvg] = useState('');
   const [sqlErError, setSqlErError] = useState<string | null>(null);
-  const [canvasSettings, setCanvasSettings] = useState<StoredCanvasSettings>(() => readStoredCanvasSettings(defaultCanvasSettings));
-  const [mermaidStyleSettings, setMermaidStyleSettings] = useState<MermaidStyleSettings>(() => readStoredMermaidStyleSettings(defaultMermaidStyleSettings));
+  const [canvasSettings, setCanvasSettings] = useState<StoredCanvasSettings>(() => migrateCanvasSettings(readStoredCanvasSettings(getThemeCanvasDefaults(readStoredTheme())), readStoredTheme()));
+  const [mermaidStyleSettings, setMermaidStyleSettings] = useState<MermaidStyleSettings>(() => migrateMermaidSettings(readStoredMermaidStyleSettings(getThemeMermaidDefaults(readStoredTheme())), readStoredTheme()));
   const [erDisplaySettings, setErDisplaySettings] = useState<ErDisplaySettings>(() => ({
-    ...readStoredErDisplaySettings(defaultErDisplaySettings),
+    ...migrateErSettings(readStoredErDisplaySettings(getThemeErDefaults(readStoredTheme())), readStoredTheme()),
     viewMode: readStoredErViewMode(),
   }));
   const [fitRequest, setFitRequest] = useState(0);
@@ -136,17 +238,6 @@ export function App() {
   const text = messages[locale];
 
   const currentDefinition = useMemo(() => getDiagramDefinition(diagramType), [diagramType]);
-  const templates = useMemo(() => {
-    const allTemplates = getTemplatesByType(diagramType);
-    const filtered = diagramType === 'er' ? allTemplates.filter((template) => template.erInputMode === erInputMode) : allTemplates;
-    const seen = new Set<string>();
-    return filtered.filter((template) => {
-      const label = getLocalizedTemplateName(template, text);
-      if (seen.has(label)) return false;
-      seen.add(label);
-      return true;
-    });
-  }, [diagramType, erInputMode, text]);
   const isSqlEr = diagramType === 'er' && erInputMode === 'sql';
   const localizedDefinition = useMemo(
     () => ({ ...currentDefinition, description: getLocalizedDescription(currentDefinition.id, text) }),
@@ -156,10 +247,19 @@ export function App() {
   const isRendering = adapter.engine === 'mermaid' && renderResult.status === 'rendering';
   const previewError = adapter.engine === 'sql-er' ? sqlErError : renderResult.error;
   const lineCount = getLineCount(source);
+  const sourcePlaceholder = getSourcePlaceholder(diagramType, erInputMode, text);
+  const sourceActionLabel = getSourceActionLabel(diagramType, erInputMode, text);
+  const mermaidDirective = getDiagramDirective(source);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     writeStoredTheme(theme);
+    setCanvasSettings((settings) => migrateCanvasSettings(settings, theme));
+    setMermaidStyleSettings((settings) => migrateMermaidSettings(settings, theme));
+    setErDisplaySettings((settings) => ({
+      ...migrateErSettings(settings, theme),
+      viewMode: settings.viewMode,
+    }));
   }, [theme]);
 
   useEffect(() => {
@@ -225,7 +325,6 @@ export function App() {
     const nextMode = type === 'er' ? erInputMode : 'mermaid';
     const nextTemplate = getTemplateForType(type, nextMode);
     setDiagramType(type);
-    setActiveTemplateId(nextTemplate.id);
     setSource(nextTemplate.code);
     setZoom(1);
     setResetRequest((value) => value + 1);
@@ -235,7 +334,6 @@ export function App() {
   function chooseErInputMode(mode: ErInputMode): void {
     const nextTemplate = getTemplateForType('er', mode);
     setErInputMode(mode);
-    setActiveTemplateId(nextTemplate.id);
     setSource(nextTemplate.code);
     setZoom(1);
     setResetRequest((value) => value + 1);
@@ -243,11 +341,19 @@ export function App() {
   }
 
   function chooseTemplate(template: DiagramTemplate): void {
-    setActiveTemplateId(template.id);
     setSource(template.code);
     setZoom(1);
     setResetRequest((value) => value + 1);
     setExportNotice(`${getLocalizedTemplateName(template, text)} ${text.loaded}`);
+  }
+
+  function resetSettings(): void {
+    setCanvasSettings(getThemeCanvasDefaults(theme));
+    setMermaidStyleSettings(getThemeMermaidDefaults(theme));
+    setErDisplaySettings(getThemeErDefaults(theme));
+    setZoom(1);
+    setResetRequest((value) => value + 1);
+    setExportNotice(text.settingsReset);
   }
 
   async function handleCopySource(): Promise<void> {
@@ -262,6 +368,10 @@ export function App() {
   async function handleExport(format: ExportFormat): Promise<void> {
     try {
       const svg = exportSvg || renderResult.svg;
+      if ((format === 'SVG' || format === 'PNG') && (!svg || previewError)) {
+        setExportNotice(text.exportUnavailable);
+        return;
+      }
       if (format === 'SVG') downloadSvg(svg);
       if (format === 'PNG') await downloadPng(svg, { scale: canvasSettings.exportScale, transparent: canvasSettings.transparentExport });
       if (format === 'Markdown') downloadMarkdown(source, adapter.sourceLanguage);
@@ -319,8 +429,22 @@ export function App() {
 
       {settingsOpen ? (
         <aside className="settings-drawer" aria-label={text.settings}>
+          <div className="settings-actions">
+            <div>
+              <h3>{text.settings}</h3>
+              <p>{text.resetSettingsHint}</p>
+            </div>
+            <button className="secondary-button" onClick={resetSettings} type="button">
+              {text.resetSettings}
+            </button>
+          </div>
           <section>
             <h3>{text.canvasSettings}</h3>
+            <label>
+              {text.editorTextColor}
+              <input type="color" value={canvasSettings.editorTextColor} onChange={(event) => setCanvasSettings((value) => ({ ...value, editorTextColor: event.target.value }))} />
+              <span>{canvasSettings.editorTextColor}</span>
+            </label>
             <label>
               {text.exportScale}
               <input type="range" min="1" max="4" step="1" value={canvasSettings.exportScale} onChange={(event) => setCanvasSettings((value) => ({ ...value, exportScale: Number(event.target.value) }))} />
@@ -362,6 +486,11 @@ export function App() {
                 <span>{Math.round(erDisplaySettings.nodeScale * 100)}%</span>
               </label>
               <label>
+                {text.fontSize}
+                <input type="range" min="11" max="24" step="1" value={erDisplaySettings.fontSize} onChange={(event) => setErDisplaySettings((value) => ({ ...value, fontSize: Number(event.target.value) }))} />
+                <span>{erDisplaySettings.fontSize}px</span>
+              </label>
+              <label>
                 {text.accentColor}
                 <input type="color" value={erDisplaySettings.accentColor} onChange={(event) => setErDisplaySettings((value) => ({ ...value, accentColor: event.target.value }))} />
                 <span>{erDisplaySettings.accentColor}</span>
@@ -375,6 +504,11 @@ export function App() {
                 {text.strokeColor}
                 <input type="color" value={erDisplaySettings.strokeColor} onChange={(event) => setErDisplaySettings((value) => ({ ...value, strokeColor: event.target.value }))} />
                 <span>{erDisplaySettings.strokeColor}</span>
+              </label>
+              <label>
+                {text.textColor}
+                <input type="color" value={erDisplaySettings.textColor} onChange={(event) => setErDisplaySettings((value) => ({ ...value, textColor: event.target.value }))} />
+                <span>{erDisplaySettings.textColor}</span>
               </label>
               <label className="inline-check">
                 <input type="checkbox" checked={erDisplaySettings.showTypes} onChange={(event) => setErDisplaySettings((value) => ({ ...value, showTypes: event.target.checked }))} />
@@ -392,23 +526,27 @@ export function App() {
           ) : (
             <section>
               <h3>{text.diagramSettings}</h3>
+              {(diagramType === 'flowchart' || diagramType === 'class' || diagramType === 'state') ? (
+                <label>
+                  {text.rankSpacing}
+                  <input type="range" min="32" max="120" step="4" value={mermaidStyleSettings.rankSpacing} onChange={(event) => setMermaidStyleSettings((value) => ({ ...value, rankSpacing: Number(event.target.value) }))} />
+                  <span>{mermaidStyleSettings.rankSpacing}px</span>
+                </label>
+              ) : null}
+              {diagramType === 'flowchart' ? (
+                <label>
+                  {text.curveStyle}
+                  <select value={mermaidStyleSettings.curve} onChange={(event) => setMermaidStyleSettings((value) => ({ ...value, curve: event.target.value as MermaidCurve }))}>
+                    <option value="basis">{text.curveBasis}</option>
+                    <option value="linear">{text.curveLinear}</option>
+                    <option value="step">{text.curveStep}</option>
+                  </select>
+                </label>
+              ) : null}
               <label>
                 {text.fontSize}
                 <input type="range" min="11" max="22" step="1" value={mermaidStyleSettings.fontSize} onChange={(event) => setMermaidStyleSettings((value) => ({ ...value, fontSize: Number(event.target.value) }))} />
                 <span>{mermaidStyleSettings.fontSize}px</span>
-              </label>
-              <label>
-                {text.rankSpacing}
-                <input type="range" min="32" max="120" step="4" value={mermaidStyleSettings.rankSpacing} onChange={(event) => setMermaidStyleSettings((value) => ({ ...value, rankSpacing: Number(event.target.value) }))} />
-                <span>{mermaidStyleSettings.rankSpacing}px</span>
-              </label>
-              <label>
-                {text.curveStyle}
-                <select value={mermaidStyleSettings.curve} onChange={(event) => setMermaidStyleSettings((value) => ({ ...value, curve: event.target.value as MermaidCurve }))}>
-                  <option value="basis">{text.curveBasis}</option>
-                  <option value="linear">{text.curveLinear}</option>
-                  <option value="step">{text.curveStep}</option>
-                </select>
               </label>
               <label>
                 {text.nodeFillColor}
@@ -476,12 +614,10 @@ export function App() {
             </div>
           ) : null}
 
-          <div className="template-strip" aria-label="Templates">
-            {templates.map((template) => (
-              <button className={`template-button ${template.id === activeTemplateId ? 'is-active' : ''}`} key={template.id} onClick={() => chooseTemplate(template)} title={template.description} type="button">
-                {getLocalizedTemplateName(template, text)}
-              </button>
-            ))}
+          <div className="template-strip" aria-label={sourceActionLabel}>
+            <button className="template-button is-active" onClick={() => chooseTemplate(getTemplateForType(diagramType, erInputMode))} type="button">
+              {sourceActionLabel}
+            </button>
           </div>
 
           <SourceEditor
@@ -489,9 +625,10 @@ export function App() {
             formatLabel={text.formatSource}
             lineCountLabel={`${lineCount} ${text.lineCount}`}
             onChange={setSource}
-            onFormat={() => setSource((value) => formatSource(value))}
-            placeholder={text.sourcePlaceholder}
+            onFormat={() => setSource((value) => (isSqlEr ? formatSqlSource(value) : formatSource(value)))}
+            placeholder={sourcePlaceholder}
             source={source}
+            textColor={canvasSettings.editorTextColor}
             title={text.source}
           />
 
@@ -532,22 +669,35 @@ export function App() {
 
           <div className="canvas-shell" ref={previewShellRef}>
             <div className="canvas-meta">
-              <span>{adapter.previewMeta}</span>
+              <span>{adapter.engine === 'mermaid' && mermaidDirective ? `${adapter.previewMeta} / ${mermaidDirective}` : adapter.previewMeta}</span>
             </div>
             <div className={`diagram-stage ${isRendering ? 'is-updating' : ''}`} aria-live="polite">
               {adapter.engine === 'sql-er' ? (
-                <SqlErCanvas
-                  displaySettings={erDisplaySettings}
-                  fitRequest={fitRequest}
-                  resetRequest={resetRequest}
-                  source={source}
-                  text={text}
-                  transparentExport={canvasSettings.transparentExport}
-                  onDisplaySettingsChange={setErDisplaySettings}
-                  onErrorChange={setSqlErError}
-                  onExportSvgReady={setExportSvg}
-                  onSourceChange={setSource}
-                />
+                <ErrorBoundary
+                  resetKey={`${diagramType}:${erInputMode}:${source}`}
+                  fallback={(error) => (
+                    <div className="er-flow-shell">
+                      <div className="er-error-state">
+                        <strong>ER 预览遇到运行时错误</strong>
+                        <p>图表没有丢失。请继续修改左侧 SQL，预览区会在下一次输入后自动恢复。</p>
+                        <pre>{error.message}</pre>
+                      </div>
+                    </div>
+                  )}
+                >
+                  <SqlErCanvas
+                    displaySettings={erDisplaySettings}
+                    fitRequest={fitRequest}
+                    resetRequest={resetRequest}
+                    source={source}
+                    text={text}
+                    transparentExport={canvasSettings.transparentExport}
+                    onDisplaySettingsChange={setErDisplaySettings}
+                    onErrorChange={setSqlErError}
+                    onExportSvgReady={setExportSvg}
+                    onSourceChange={setSource}
+                  />
+                </ErrorBoundary>
               ) : renderResult.status === 'error' ? (
                 <div className="error-panel">
                   <strong>{text.mermaidFailed}</strong>
@@ -563,7 +713,13 @@ export function App() {
                   resetRequest={resetRequest}
                   zoom={zoom}
                 >
-                  <div className="svg-preview" dangerouslySetInnerHTML={{ __html: renderResult.svg }} />
+                  <MermaidPreview
+                    onExportSvgReady={setExportSvg}
+                    onSourceChange={setSource}
+                    source={source}
+                    styleSettings={mermaidStyleSettings}
+                    svg={renderResult.svg}
+                  />
                 </DiagramViewport>
               )}
             </div>

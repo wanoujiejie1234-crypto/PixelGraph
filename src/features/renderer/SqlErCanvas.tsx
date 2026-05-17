@@ -6,7 +6,6 @@ import {
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
-  addEdge,
   applyEdgeChanges,
   applyNodeChanges,
   type EdgeChange,
@@ -16,7 +15,18 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { Messages } from '../i18n/messages';
-import { readStoredErNodePositions, writeStoredErNodePositions } from '../storage/storage';
+import {
+  readStoredErEdgeLabels,
+  readStoredErLocalLabels,
+  readStoredErNodePositions,
+  readStoredErNodeSizes,
+  writeStoredErEdgeLabels,
+  writeStoredErLocalLabels,
+  writeStoredErNodePositions,
+  writeStoredErNodeSizes,
+  type StoredErEdgeLabel,
+} from '../storage/storage';
+import { EditableErEdge } from './ErFlowEdges';
 import { ChenAttributeNode, ChenEntityNode, ChenRelationshipNode, DatabaseTableNode } from './ErFlowNodes';
 import { applyPositions, layoutErGraph } from './erLayout';
 import { exportErGraphToSvg } from './erSvgExport';
@@ -29,7 +39,7 @@ import {
   type ErGraphNode,
   type ErViewMode,
 } from './erGraphModel';
-import { modelToSql, parseSqlErModel, type SqlColumn, type SqlErModel, type SqlRelationship, type SqlTable } from './sqlErModel';
+import { modelToSql, parseSqlErModel, validateSqlErSource, type SqlColumn, type SqlErModel, type SqlRelationship, type SqlTable } from './sqlErModel';
 
 export type { ErDisplaySettings, ErViewMode };
 
@@ -53,16 +63,27 @@ const nodeTypes = {
   databaseTable: DatabaseTableNode,
 };
 
+const edgeTypes = {
+  editableEr: EditableErEdge,
+};
+
+const emptyModel: SqlErModel = {
+  relationships: [],
+  tables: [],
+};
+
 export const defaultErDisplaySettings: ErDisplaySettings = {
   accentColor: '#507c69',
   attributeVisibility: 'keys',
   fillColor: '#ffffff',
+  fontSize: 15,
   layoutDirection: 'LR',
   nodeScale: 1,
   showCardinality: true,
   showComments: true,
   showTypes: true,
   strokeColor: '#171817',
+  textColor: '#171817',
   viewMode: 'database',
 };
 
@@ -74,6 +95,59 @@ function updateTable(model: SqlErModel, tableName: string, updater: (table: SqlT
   return {
     ...model,
     tables: model.tables.map((table) => (table.name === tableName ? updater(table) : table)),
+  };
+}
+
+function renameTable(model: SqlErModel, tableName: string, nextName: string): SqlErModel {
+  const trimmed = nextName.trim();
+  if (!trimmed || trimmed === tableName) return model;
+
+  return {
+    tables: model.tables.map((table) => {
+      const renamedTable = table.name === tableName ? { ...table, name: trimmed } : table;
+      return {
+        ...renamedTable,
+        columns: renamedTable.columns.map((column) =>
+          column.references?.table === tableName
+            ? {
+                ...column,
+                references: { ...column.references, table: trimmed },
+              }
+            : column,
+        ),
+      };
+    }),
+    relationships: model.relationships.map((relationship) => ({
+      ...relationship,
+      fromTable: relationship.fromTable === tableName ? trimmed : relationship.fromTable,
+      toTable: relationship.toTable === tableName ? trimmed : relationship.toTable,
+    })),
+  };
+}
+
+function renameColumn(model: SqlErModel, tableName: string, columnName: string, nextName: string): SqlErModel {
+  const trimmed = nextName.trim();
+  if (!trimmed || trimmed === columnName) return model;
+
+  return {
+    tables: model.tables.map((table) => ({
+      ...table,
+      columns: table.columns.map((column) => {
+        if (table.name === tableName && column.name === columnName) return { ...column, name: trimmed };
+        if (column.references?.table === tableName && column.references.column === columnName) {
+          return {
+            ...column,
+            references: { ...column.references, column: trimmed },
+          };
+        }
+        return column;
+      }),
+    })),
+    relationships: model.relationships.map((relationship) => ({
+      ...relationship,
+      fromColumn: relationship.fromTable === tableName && relationship.fromColumn === columnName ? trimmed : relationship.fromColumn,
+      toColumn: relationship.toTable === tableName && relationship.toColumn === columnName ? trimmed : relationship.toColumn,
+    })),
   };
 }
 
@@ -93,9 +167,9 @@ function updateRelationship(model: SqlErModel, relationshipId: string, updater: 
 
 function applyEdit(model: SqlErModel, target: ErEditTarget, value: string | boolean): SqlErModel {
   if (target.kind === 'table-comment') return updateTable(model, target.tableName, (table) => ({ ...table, comment: String(value) }));
-  if (target.kind === 'table-name') return updateTable(model, target.tableName, (table) => ({ ...table, name: String(value) || table.name }));
+  if (target.kind === 'table-name') return renameTable(model, target.tableName, String(value));
   if (target.kind === 'column-comment') return updateColumn(model, target.tableName, target.columnName, (column) => ({ ...column, comment: String(value) }));
-  if (target.kind === 'column-name') return updateColumn(model, target.tableName, target.columnName, (column) => ({ ...column, name: String(value) || column.name }));
+  if (target.kind === 'column-name') return renameColumn(model, target.tableName, target.columnName, String(value));
   if (target.kind === 'column-type') return updateColumn(model, target.tableName, target.columnName, (column) => ({ ...column, dataType: String(value) || 'TEXT' }));
   if (target.kind === 'column-primary') return updateColumn(model, target.tableName, target.columnName, (column) => ({ ...column, isPrimaryKey: Boolean(value) }));
   if (target.kind === 'column-nullable') return updateColumn(model, target.tableName, target.columnName, (column) => ({ ...column, isNullable: Boolean(value) }));
@@ -112,18 +186,52 @@ function getModelSignature(model: SqlErModel, display: ErDisplaySettings): strin
     attributeVisibility: display.attributeVisibility,
     accentColor: display.accentColor,
     fillColor: display.fillColor,
+    fontSize: display.fontSize,
     layoutDirection: display.layoutDirection,
     nodeScale: display.nodeScale,
     showCardinality: display.showCardinality,
     showComments: display.showComments,
     showTypes: display.showTypes,
     strokeColor: display.strokeColor,
+    textColor: display.textColor,
     tables: model.tables.map((table) => ({
       columns: table.columns.map((column) => [column.name, column.comment, column.dataType, column.isPrimaryKey, column.isForeignKey]),
       name: table.name,
     })),
     viewMode: display.viewMode,
   });
+}
+
+function getPositionScope(source: string, display: ErDisplaySettings): string {
+  let hash = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    hash = (hash * 31 + source.charCodeAt(index)) >>> 0;
+  }
+  return `${display.viewMode}:${hash.toString(36)}`;
+}
+
+function safeValidateSqlErSource(source: string): ReturnType<typeof validateSqlErSource> {
+  try {
+    return validateSqlErSource(source);
+  } catch (error) {
+    return {
+      diagnostics: [
+        {
+          level: 'error',
+          message: error instanceof Error ? `SQL ER 校验失败：${error.message}` : 'SQL ER 校验失败，请检查输入内容。',
+        },
+      ],
+      hasFatalError: true,
+    };
+  }
+}
+
+function safeParseSqlErModel(source: string): SqlErModel {
+  try {
+    return parseSqlErModel(source);
+  } catch {
+    return emptyModel;
+  }
 }
 
 function InnerSqlErCanvas({
@@ -143,11 +251,19 @@ function InnerSqlErCanvas({
   const [nodes, setNodes] = useState<ErGraphNode[]>([]);
   const [edges, setEdges] = useState<ErGraphEdge[]>([]);
   const [collapsedTables, setCollapsedTables] = useState<Record<string, boolean>>({});
-  const [localLabels, setLocalLabels] = useState<Record<string, string>>({});
-  const [positions, setPositions] = useState<Record<string, XYPosition>>(() => readStoredErNodePositions());
+  const positionScope = useMemo(() => getPositionScope(source, displaySettings), [displaySettings, source]);
+  const [positions, setPositions] = useState<Record<string, XYPosition>>(() => readStoredErNodePositions(positionScope));
+  const [nodeSizes, setNodeSizes] = useState<Record<string, { height: number; width: number }>>(() => readStoredErNodeSizes(positionScope));
+  const [localLabels, setLocalLabels] = useState<Record<string, string>>(() => readStoredErLocalLabels(positionScope));
+  const [edgeLabels, setEdgeLabels] = useState<Record<string, StoredErEdgeLabel>>(() => readStoredErEdgeLabels(positionScope));
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [layoutRevision, setLayoutRevision] = useState(0);
-  const model = useMemo(() => parseSqlErModel(source), [source]);
+  const validation = useMemo(() => safeValidateSqlErSource(source), [source]);
+  const validationMessage = useMemo(() => validation.diagnostics.map((item) => item.message).join('\n'), [validation.diagnostics]);
+  const model = useMemo(
+    () => (validation.hasFatalError ? emptyModel : safeParseSqlErModel(source)),
+    [source, validation.hasFatalError],
+  );
   const modelSignature = useMemo(() => getModelSignature(model, displaySettings), [model, displaySettings]);
   const collapsedSignature = useMemo(() => JSON.stringify(collapsedTables), [collapsedTables]);
 
@@ -165,40 +281,62 @@ function InnerSqlErCanvas({
     [model, onSourceChange],
   );
 
-  const graph = useMemo(
-    () =>
-      buildErGraph(model, {
+  const graph = useMemo(() => {
+    try {
+      return buildErGraph(model, {
         collapsedTables,
         display: displaySettings,
+        edgeLabels,
         localLabels,
+        nodeSizes,
         onEdit: commitModel,
+        onEdgeLabelChange: (edgeId, value) => setEdgeLabels((labels) => ({ ...labels, [edgeId]: { dx: labels[edgeId]?.dx ?? 0, dy: labels[edgeId]?.dy ?? 0, text: value } })),
+        onEdgeLabelOffsetChange: (edgeId, offset, textValue) => setEdgeLabels((labels) => ({ ...labels, [edgeId]: { dx: offset.x, dy: offset.y, text: labels[edgeId]?.text ?? textValue } })),
         onLocalLabelEdit: (nodeId, value) => setLocalLabels((labels) => ({ ...labels, [nodeId]: value })),
+        onNodeResize: (nodeId, size) => setNodeSizes((sizes) => ({ ...sizes, [nodeId]: size })),
         positions,
         selectedId,
         setCollapsed: (tableName, collapsed) => setCollapsedTables((value) => ({ ...value, [tableName]: collapsed })),
-      }),
-    [collapsedTables, commitModel, displaySettings, localLabels, model, positions, selectedId],
-  );
+      });
+    } catch {
+      onErrorChange('ER 图模型构建失败，请检查表名、字段名和外键关系。');
+      return { edges: [], nodes: [] };
+    }
+  }, [collapsedTables, commitModel, displaySettings, edgeLabels, localLabels, model, nodeSizes, onErrorChange, positions, selectedId]);
 
   useEffect(() => {
+    if (validation.hasFatalError) {
+      onErrorChange(validationMessage || text.noTable);
+      return;
+    }
     onErrorChange(model.tables.length === 0 ? text.noTable : null);
-  }, [model.tables.length, onErrorChange, text.noTable]);
+  }, [model.tables.length, onErrorChange, text.noTable, validation.hasFatalError, validationMessage]);
 
   useEffect(() => {
+    if (validation.hasFatalError || graph.nodes.length === 0) {
+      setNodes([]);
+      setEdges([]);
+      return;
+    }
     let cancelled = false;
-    void layoutErGraph(graph.nodes, graph.edges, displaySettings.layoutDirection).then((layout) => {
-      if (cancelled) return;
-      const merged = Object.fromEntries(Object.entries(layout).map(([id, position]) => [id, positions[id] ?? position]));
-      setNodes(applyPositions(graph.nodes, merged));
-      setEdges(graph.edges);
-      setPositions((previous) => ({ ...merged, ...previous }));
-    });
+    void layoutErGraph(graph.nodes, graph.edges, displaySettings.layoutDirection)
+      .then((layout) => {
+        if (cancelled) return;
+        const merged = Object.fromEntries(Object.entries(layout).map(([id, position]) => [id, positions[id] ?? position]));
+        setNodes(applyPositions(graph.nodes, merged));
+        setEdges(graph.edges);
+        setPositions((previous) => ({ ...merged, ...previous }));
+      })
+      .catch(() => {
+        if (!cancelled) onErrorChange('ER 自动排版失败，请检查表关系是否形成了异常结构，或点击自动排版重试。');
+      });
     return () => {
       cancelled = true;
     };
-  }, [collapsedSignature, displaySettings.layoutDirection, layoutRevision, modelSignature]);
+  }, [collapsedSignature, displaySettings.layoutDirection, layoutRevision, modelSignature, validation.hasFatalError]);
 
   useEffect(() => {
+    if (validation.hasFatalError) return;
     setNodes((current) =>
       current.map((node) => {
         const next = graph.nodes.find((item) => item.id === node.id);
@@ -206,15 +344,38 @@ function InnerSqlErCanvas({
       }),
     );
     setEdges(graph.edges);
-  }, [graph.edges, graph.nodes]);
+  }, [graph.edges, graph.nodes, validation.hasFatalError]);
 
   useEffect(() => {
-    writeStoredErNodePositions(positions);
-  }, [positions]);
+    setPositions(readStoredErNodePositions(positionScope));
+    setNodeSizes(readStoredErNodeSizes(positionScope));
+    setLocalLabels(readStoredErLocalLabels(positionScope));
+    setEdgeLabels(readStoredErEdgeLabels(positionScope));
+  }, [positionScope]);
 
   useEffect(() => {
+    writeStoredErNodePositions(positionScope, positions);
+  }, [positionScope, positions]);
+
+  useEffect(() => {
+    writeStoredErNodeSizes(positionScope, nodeSizes);
+  }, [nodeSizes, positionScope]);
+
+  useEffect(() => {
+    writeStoredErLocalLabels(positionScope, localLabels);
+  }, [localLabels, positionScope]);
+
+  useEffect(() => {
+    writeStoredErEdgeLabels(positionScope, edgeLabels);
+  }, [edgeLabels, positionScope]);
+
+  useEffect(() => {
+    if (validation.hasFatalError || nodes.length === 0) {
+      onExportSvgReady('');
+      return;
+    }
     onExportSvgReady(exportErGraphToSvg(nodes, edges, { transparent: transparentExport }));
-  }, [edges, nodes, onExportSvgReady, transparentExport]);
+  }, [edges, nodes, onExportSvgReady, transparentExport, validation.hasFatalError]);
 
   useEffect(() => {
     if (fitRequest === 0) return;
@@ -251,8 +412,29 @@ function InnerSqlErCanvas({
     flowRef.current?.fitView({ duration: 260, padding: 0.14 });
   }
 
+  if (validation.hasFatalError) {
+    return (
+      <div className="er-flow-shell" ref={wrapperRef}>
+        <div className="er-error-state">
+          <strong>SQL ER 输入不符合标准</strong>
+          <p>请使用 CREATE TABLE 语句，并确保每个表都有字段、括号闭合、外键引用的表和字段真实存在。</p>
+          <pre>{validationMessage}</pre>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="er-flow-shell" ref={wrapperRef}>
+    <div
+      className="er-flow-shell"
+      ref={wrapperRef}
+      style={
+        {
+          '--er-font-size': `${displaySettings.fontSize}px`,
+          '--er-text': displaySettings.textColor,
+        } as React.CSSProperties
+      }
+    >
       <div className="er-flow-toolbar" data-no-canvas-pan="true">
         <div className="er-tool-group">
           <button className={displaySettings.viewMode === 'database' ? 'is-active' : ''} onClick={() => commitDisplay({ viewMode: 'database' })} type="button">
@@ -289,13 +471,13 @@ function InnerSqlErCanvas({
 
       <ReactFlow
         colorMode="light"
+        edgeTypes={edgeTypes}
         edges={edges}
         fitView
         maxZoom={2.6}
         minZoom={0.15}
         nodeTypes={nodeTypes}
         nodes={nodes}
-        onConnect={(connection) => setEdges((current) => addEdge(connection, current))}
         onEdgesChange={onEdgesChange}
         onInit={(instance) => {
           flowRef.current = instance;

@@ -49,6 +49,9 @@ export function downloadSvg(svg: string): void {
 }
 
 export function downloadMarkdown(source: string, language = 'mermaid'): void {
+  if (!source.trim()) {
+    throw new Error('当前没有可导出的源码。');
+  }
   const markdown = `\`\`\`${language}\n${source.trim()}\n\`\`\`\n`;
   downloadBlob(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }), 'pixelgraph-diagram.md');
 }

@@ -6,6 +6,7 @@ interface Props {
   onFormat: () => void;
   placeholder: string;
   source: string;
+  textColor: string;
   title: string;
 }
 
@@ -14,7 +15,7 @@ function getLineNumbers(source: string): number[] {
   return Array.from({ length: count }, (_, index) => index + 1);
 }
 
-export function SourceEditor({ error, formatLabel, lineCountLabel, onChange, onFormat, placeholder, source, title }: Props) {
+export function SourceEditor({ error, formatLabel, lineCountLabel, onChange, onFormat, placeholder, source, textColor, title }: Props) {
   const lineNumbers = getLineNumbers(source);
 
   return (
@@ -36,6 +37,7 @@ export function SourceEditor({ error, formatLabel, lineCountLabel, onChange, onF
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
           spellCheck={false}
+          style={{ color: textColor }}
           value={source}
         />
       </div>

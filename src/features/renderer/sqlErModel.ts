@@ -33,6 +33,18 @@ export interface SqlErModel {
   relationships: SqlRelationship[];
 }
 
+export type SqlErDiagnosticLevel = 'error' | 'warning';
+
+export interface SqlErDiagnostic {
+  level: SqlErDiagnosticLevel;
+  message: string;
+}
+
+export interface SqlErValidationResult {
+  diagnostics: SqlErDiagnostic[];
+  hasFatalError: boolean;
+}
+
 const reservedWords = new Set([
   'constraint',
   'primary',
@@ -88,8 +100,8 @@ function splitDefinitions(body: string): string[] {
   return parts;
 }
 
-function findCreateTableStatements(sql: string): Array<{ name: string; body: string; suffix: string }> {
-  const statements: Array<{ name: string; body: string; suffix: string }> = [];
+function findCreateTableStatements(sql: string): Array<{ complete: boolean; name: string; body: string; suffix: string }> {
+  const statements: Array<{ complete: boolean; name: string; body: string; suffix: string }> = [];
   const source = stripSqlComments(sql);
   const createRegex = /create\s+table\s+(?:if\s+not\s+exists\s+)?([`"'\[\]\w\u4e00-\u9fa5-]+)\s*\(/giu;
   let match: RegExpExecArray | null;
@@ -115,17 +127,128 @@ function findCreateTableStatements(sql: string): Array<{ name: string; body: str
       }
     }
 
-    const suffixStart = index + 1;
+    const complete = depth === 0;
+    const suffixStart = complete ? index + 1 : index;
     const suffixEnd = source.indexOf(';', suffixStart);
     statements.push({
+      complete,
       name: cleanIdentifier(match[1]),
-      body: source.slice(bodyStart, index),
+      body: source.slice(bodyStart, complete ? index : source.length),
       suffix: source.slice(suffixStart, suffixEnd === -1 ? source.length : suffixEnd),
     });
     createRegex.lastIndex = suffixEnd === -1 ? suffixStart : suffixEnd + 1;
   }
 
   return statements;
+}
+
+function isLikelyMermaid(source: string): boolean {
+  return /^(erDiagram|classDiagram|sequenceDiagram|stateDiagram(?:-v2)?|flowchart|graph)\b/iu.test(source.trimStart());
+}
+
+function validateDefinitions(table: SqlTable, definitions: string[]): SqlErDiagnostic[] {
+  const diagnostics: SqlErDiagnostic[] = [];
+  const columnNames = new Set<string>();
+
+  table.columns.forEach((column) => {
+    const key = column.name.toLowerCase();
+    if (columnNames.has(key)) {
+      diagnostics.push({ level: 'error', message: `表 ${table.name} 中字段 ${column.name} 重复。` });
+    }
+    columnNames.add(key);
+  });
+
+  definitions.forEach((definition) => {
+    const trimmed = definition.trim();
+    if (!trimmed) return;
+    const column = parseColumnDefinition(trimmed);
+    const isKnownConstraint = /\b(primary|foreign|unique|index|key|constraint|check)\b/iu.test(trimmed);
+    if (!column && !isKnownConstraint) {
+      diagnostics.push({ level: 'warning', message: `表 ${table.name} 中有一行未识别：${trimmed.slice(0, 80)}` });
+    }
+  });
+
+  if (table.columns.length === 0) {
+    diagnostics.push({ level: 'error', message: `表 ${table.name} 没有可识别字段，请检查字段定义。` });
+  }
+
+  return diagnostics;
+}
+
+export function validateSqlErSource(sql: string): SqlErValidationResult {
+  const source = sql.trim();
+  const diagnostics: SqlErDiagnostic[] = [];
+
+  if (!source) {
+    return {
+      diagnostics: [{ level: 'error', message: '请输入 CREATE TABLE 建表语句后再生成 ER 图。' }],
+      hasFatalError: true,
+    };
+  }
+
+  if (isLikelyMermaid(source)) {
+    return {
+      diagnostics: [{ level: 'error', message: '当前是 SQL 生成 ER 模式，但输入看起来是 Mermaid。请切换到 Mermaid ER，或粘贴 CREATE TABLE 语句。' }],
+      hasFatalError: true,
+    };
+  }
+
+  const statements = findCreateTableStatements(source);
+  if (statements.length === 0) {
+    return {
+      diagnostics: [{ level: 'error', message: '未找到 CREATE TABLE 语句。标准输入应类似：CREATE TABLE users (id BIGINT PRIMARY KEY);' }],
+      hasFatalError: true,
+    };
+  }
+
+  const parsedTables = statements.map((statement) => {
+    const table: SqlTable = {
+      name: statement.name,
+      comment: parseTableComment(statement.suffix),
+      columns: [],
+    };
+    const definitions = splitDefinitions(statement.body);
+
+    definitions.forEach((definition) => {
+      const column = parseColumnDefinition(definition);
+      if (column) table.columns.push(column);
+    });
+    applyTableConstraints(table, definitions);
+
+    if (!statement.complete) {
+      diagnostics.push({ level: 'error', message: `表 ${statement.name} 的 CREATE TABLE 缺少右括号 ")"。` });
+    }
+    diagnostics.push(...validateDefinitions(table, definitions));
+    return table;
+  });
+
+  const tableNames = new Set<string>();
+  parsedTables.forEach((table) => {
+    const key = table.name.toLowerCase();
+    if (tableNames.has(key)) diagnostics.push({ level: 'error', message: `表名 ${table.name} 重复。` });
+    tableNames.add(key);
+  });
+
+  const tableByName = new Map(parsedTables.map((table) => [table.name.toLowerCase(), table]));
+  parsedTables.forEach((table) => {
+    table.columns.forEach((column) => {
+      if (!column.references) return;
+      const targetTable = tableByName.get(column.references.table.toLowerCase());
+      if (!targetTable) {
+        diagnostics.push({ level: 'error', message: `字段 ${table.name}.${column.name} 引用了不存在的表 ${column.references.table}。` });
+        return;
+      }
+      const targetColumn = targetTable.columns.find((item) => item.name.toLowerCase() === column.references?.column.toLowerCase());
+      if (!targetColumn) {
+        diagnostics.push({ level: 'error', message: `字段 ${table.name}.${column.name} 引用了不存在的字段 ${column.references.table}.${column.references.column}。` });
+      }
+    });
+  });
+
+  return {
+    diagnostics,
+    hasFatalError: diagnostics.some((item) => item.level === 'error'),
+  };
 }
 
 function parseTableComment(suffix: string): string {
@@ -274,7 +397,7 @@ function escapeSql(value: string): string {
 }
 
 export function parseSqlErModel(sql: string): SqlErModel {
-  const tables = findCreateTableStatements(sql).map((statement) => {
+  const tables = findCreateTableStatements(sql).filter((statement) => statement.complete).map((statement) => {
     const table: SqlTable = {
       name: statement.name,
       comment: parseTableComment(statement.suffix),

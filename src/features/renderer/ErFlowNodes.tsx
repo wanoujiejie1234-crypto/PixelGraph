@@ -1,4 +1,5 @@
-import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { useEffect, useState } from 'react';
+import { Handle, NodeResizer, Position, type NodeProps } from '@xyflow/react';
 import type { ErGraphNode } from './erGraphModel';
 
 function isActive(node: NodeProps<ErGraphNode>): boolean {
@@ -17,6 +18,68 @@ function columnEditKind(showComments: boolean): 'column-comment' | 'column-name'
   return showComments ? 'column-comment' : 'column-name';
 }
 
+function minSize(node: NodeProps<ErGraphNode>): { height: number; width: number } {
+  if (node.data.kind === 'table') return { height: 96, width: 220 };
+  if (node.data.kind === 'relationship') return { height: 64, width: 118 };
+  if (node.data.kind === 'attribute') return { height: 46, width: 132 };
+  return { height: 58, width: 138 };
+}
+
+function Resizer(props: NodeProps<ErGraphNode>) {
+  const minimum = minSize(props);
+
+  return (
+    <NodeResizer
+      color={String(props.data.display.accentColor)}
+      handleClassName="er-resize-handle nodrag"
+      isVisible={isActive(props)}
+      lineClassName="er-resize-line"
+      minHeight={minimum.height}
+      minWidth={minimum.width}
+      onResizeEnd={(_, params) => props.data.onNodeResize?.(props.id, { height: params.height, width: params.width })}
+    />
+  );
+}
+
+function ChenRelationshipLabel({ data, id }: Pick<NodeProps<ErGraphNode>, 'data' | 'id'>) {
+  const [draft, setDraft] = useState(data.label);
+  const [isComposing, setIsComposing] = useState(false);
+
+  useEffect(() => {
+    if (!isComposing) setDraft(data.label);
+  }, [data.label, isComposing]);
+
+  function commit(value = draft): void {
+    data.onLocalLabelEdit?.(id, value.trim());
+  }
+
+  return (
+    <input
+      className="chen-title-input chen-relationship-input nodrag"
+      onBlur={() => commit()}
+      onChange={(event) => {
+        setDraft(event.target.value);
+        if (!isComposing) commit(event.target.value);
+      }}
+      onCompositionEnd={(event) => {
+        setIsComposing(false);
+        setDraft(event.currentTarget.value);
+        commit(event.currentTarget.value);
+      }}
+      onCompositionStart={() => setIsComposing(true)}
+      onDoubleClick={stop}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          event.currentTarget.blur();
+        }
+      }}
+      onPointerDown={stop}
+      title={draft}
+      value={draft}
+    />
+  );
+}
+
 export function DatabaseTableNode(props: NodeProps<ErGraphNode>) {
   const { data, id } = props;
   const table = data.metadata.table;
@@ -24,6 +87,7 @@ export function DatabaseTableNode(props: NodeProps<ErGraphNode>) {
 
   return (
     <div className={`er-flow-node er-table-node ${isActive(props) ? 'is-selected' : ''}`}>
+      <Resizer {...props} />
       <Handle className="er-handle" position={Position.Left} type="target" />
       <div className="er-table-head">
         <input
@@ -69,6 +133,7 @@ export function ChenEntityNode(props: NodeProps<ErGraphNode>) {
 
   return (
     <div className={`er-flow-node chen-flow-entity ${isActive(props) ? 'is-selected' : ''}`}>
+      <Resizer {...props} />
       <Handle className="er-handle" position={Position.Left} type="target" />
       <input
         className="chen-title-input nodrag"
@@ -90,6 +155,7 @@ export function ChenAttributeNode(props: NodeProps<ErGraphNode>) {
 
   return (
     <div className={`er-flow-node chen-flow-attribute ${column?.isPrimaryKey ? 'is-key' : ''} ${isActive(props) ? 'is-selected' : ''}`}>
+      <Resizer {...props} />
       <Handle className="er-handle" position={Position.Left} type="target" />
       <input
         className="chen-title-input nodrag"
@@ -104,19 +170,14 @@ export function ChenAttributeNode(props: NodeProps<ErGraphNode>) {
 }
 
 export function ChenRelationshipNode(props: NodeProps<ErGraphNode>) {
-  const { data } = props;
+  const { data, id } = props;
 
   return (
     <div className={`er-flow-node chen-flow-relationship ${isActive(props) ? 'is-selected' : ''}`}>
+      <Resizer {...props} />
       <Handle className="er-handle" position={Position.Left} type="target" />
       <div className="chen-relationship-shape" aria-hidden="true" />
-      <input
-        className="chen-title-input nodrag"
-        onChange={(event) => data.onLocalLabelEdit?.(props.id, event.target.value)}
-        onDoubleClick={stop}
-        onPointerDown={stop}
-        value={data.label}
-      />
+      <ChenRelationshipLabel data={data} id={id} />
       <Handle className="er-handle" position={Position.Right} type="source" />
     </div>
   );

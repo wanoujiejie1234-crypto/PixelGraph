@@ -2,44 +2,53 @@ import type { DiagramTemplate, DiagramType } from '../diagrams/types';
 
 export const diagramTemplates: DiagramTemplate[] = [
   {
-    id: 'er-sql-orders',
+    id: 'er-sql-commerce',
     type: 'er',
-    name: 'SQL 订单 ER',
-    description: '用 CREATE TABLE、主键、外键和注释生成标准 Chen ER 图。',
+    name: '订单数据模型',
+    description: '从 CREATE TABLE、主键、外键和注释生成可编辑的数据库 ER 图。',
     erInputMode: 'sql',
     code: `CREATE TABLE users (
   id BIGINT PRIMARY KEY COMMENT '用户ID',
-  username VARCHAR(80) NOT NULL COMMENT '用户名',
-  age INT COMMENT '年龄',
-  created_at DATETIME COMMENT '注册时间'
+  email VARCHAR(120) NOT NULL COMMENT '邮箱',
+  display_name VARCHAR(80) NOT NULL COMMENT '显示名',
+  created_at DATETIME NOT NULL COMMENT '注册时间'
 ) COMMENT='用户';
 
 CREATE TABLE products (
   id BIGINT PRIMARY KEY COMMENT '商品ID',
+  sku VARCHAR(64) NOT NULL COMMENT '库存编码',
   name VARCHAR(120) NOT NULL COMMENT '商品名称',
   price DECIMAL(10,2) NOT NULL COMMENT '价格'
 ) COMMENT='商品';
 
-CREATE TABLE purchases (
-  id BIGINT PRIMARY KEY COMMENT '购买记录ID',
-  user_id BIGINT NOT NULL COMMENT '用户ID',
-  product_id BIGINT NOT NULL COMMENT '商品ID',
-  quantity INT NOT NULL COMMENT '数量',
+CREATE TABLE orders (
+  id BIGINT PRIMARY KEY COMMENT '订单ID',
+  user_id BIGINT NOT NULL COMMENT '下单用户',
+  status VARCHAR(32) NOT NULL COMMENT '订单状态',
+  total_amount DECIMAL(10,2) NOT NULL COMMENT '订单金额',
   paid_at DATETIME COMMENT '支付时间',
-  FOREIGN KEY (user_id) REFERENCES users(id),
+  FOREIGN KEY (user_id) REFERENCES users(id)
+) COMMENT='订单';
+
+CREATE TABLE order_items (
+  id BIGINT PRIMARY KEY COMMENT '明细ID',
+  order_id BIGINT NOT NULL COMMENT '所属订单',
+  product_id BIGINT NOT NULL COMMENT '购买商品',
+  quantity INT NOT NULL COMMENT '购买数量',
+  FOREIGN KEY (order_id) REFERENCES orders(id),
   FOREIGN KEY (product_id) REFERENCES products(id)
-) COMMENT='购买';`,
+) COMMENT='订单明细';`,
   },
   {
-    id: 'er-mermaid-orders',
+    id: 'er-mermaid-commerce',
     type: 'er',
     name: 'Mermaid 订单 ER',
-    description: 'Mermaid ER 语法示例，用于兼容已有 Mermaid 工作流。',
+    description: '兼容 Mermaid ER 语法的订单、商品和明细关系示例。',
     erInputMode: 'mermaid',
     code: `erDiagram
   CUSTOMER ||--o{ ORDER : places
-  ORDER ||--|{ LINE_ITEM : contains
-  PRODUCT ||--o{ LINE_ITEM : appears_in
+  ORDER ||--|{ ORDER_ITEM : contains
+  PRODUCT ||--o{ ORDER_ITEM : appears_in
   CUSTOMER {
     string id PK
     string email
@@ -53,53 +62,64 @@ CREATE TABLE purchases (
   }
   PRODUCT {
     string id PK
+    string sku
     string name
     decimal price
   }
-  LINE_ITEM {
+  ORDER_ITEM {
     string order_id FK
     string product_id FK
     int quantity
   }`,
   },
   {
-    id: 'class-renderer',
+    id: 'class-rendering-workbench',
     type: 'class',
-    name: '渲染模块',
-    description: '编辑器、渲染器和导出服务之间的依赖。',
+    name: '渲染工作台',
+    description: '描述编辑器状态、渲染器、导出服务之间的依赖关系。',
     code: `classDiagram
-  class EditorState {
-    +string diagramCode
+  class WorkspaceState {
     +DiagramType diagramType
-    +setCode(source)
+    +string source
+    +ThemeMode theme
+    +updateSource(source)
+    +switchDiagram(type)
+  }
+  class DiagramAdapter {
+    +DiagramEngine engine
+    +string sourceLanguage
+    +render(source)
   }
   class MermaidRenderer {
-    +render(source) RenderResult
-    +dispose()
+    +parse(source)
+    +renderSvg(source)
   }
   class ExportService {
-    +copySource()
-    +downloadSvg()
-    +downloadPng()
-    +downloadMarkdown()
+    +copySource(source)
+    +downloadSvg(svg)
+    +downloadPng(svg, scale)
+    +downloadMarkdown(source)
   }
-  EditorState --> MermaidRenderer
+  WorkspaceState --> DiagramAdapter
+  DiagramAdapter --> MermaidRenderer
   MermaidRenderer --> ExportService`,
   },
   {
-    id: 'class-domain',
+    id: 'class-domain-model',
     type: 'class',
-    name: '领域对象',
-    description: '模板、图表定义和渲染结果的结构。',
+    name: '领域模型',
+    description: '描述项目、图表定义、模板和渲染结果之间的结构关系。',
     code: `classDiagram
   class DiagramDefinition {
     +DiagramType id
     +string label
+    +string description
     +string defaultTemplateId
   }
   class DiagramTemplate {
     +string id
     +DiagramType type
+    +string name
     +string code
   }
   class RenderResult {
@@ -107,93 +127,122 @@ CREATE TABLE purchases (
     +string svg
     +string error
   }
-  DiagramDefinition --> DiagramTemplate
-  DiagramTemplate --> RenderResult`,
+  class LocalDraft {
+    +string source
+    +DiagramType type
+    +string updatedAt
+  }
+  DiagramDefinition "1" --> "*" DiagramTemplate
+  DiagramTemplate --> RenderResult
+  LocalDraft --> DiagramDefinition`,
   },
   {
-    id: 'sequence-export',
+    id: 'sequence-export-pipeline',
     type: 'sequence',
-    name: '导出流程',
-    description: '用户从编辑到导出的完整调用链。',
+    name: '导出流水线',
+    description: '从编辑源码到生成 SVG、PNG 和 Markdown 的完整调用链。',
     code: `sequenceDiagram
-  participant User as 用户
-  participant Editor as 编辑器
-  participant Renderer as Mermaid渲染器
-  participant Exporter as 导出模块
-  User->>Editor: 修改 Mermaid 源码
-  Editor->>Renderer: 300ms 防抖渲染
-  Renderer-->>Editor: 返回 SVG 或错误
-  User->>Exporter: 选择导出格式
-  Exporter-->>User: 下载文件或复制文本`,
+  actor User as 用户
+  participant Editor as 文本编辑器
+  participant Renderer as Mermaid 渲染器
+  participant Preview as 预览画布
+  participant Exporter as 导出服务
+  User->>Editor: 修改图表源码
+  Editor->>Renderer: 防抖后提交源码
+  Renderer--)Preview: 异步返回 SVG 或错误信息
+  User->>Exporter: 选择 SVG / PNG / Markdown
+  Exporter->>Preview: 读取当前可导出图形
+  Exporter--)User: 异步下载文件或显示失败原因`,
   },
   {
-    id: 'sequence-login',
+    id: 'sequence-login-review',
     type: 'sequence',
-    name: '登录接口',
-    description: '常见前后端登录调用示例。',
+    name: '登录认证链路',
+    description: '前端、API、认证服务和数据库之间的登录调用示例。',
     code: `sequenceDiagram
-  participant Client as Web客户端
-  participant Api as API服务
+  actor Visitor as 访问者
+  participant Web as Web 客户端
+  participant Api as API 服务
   participant Auth as 认证服务
-  participant Db as 数据库
-  Client->>Api: 提交账号与密码
+  participant Db as 用户数据库
+  Visitor->>Web: 输入账号和密码
+  Web->>Api: POST /sessions
   Api->>Auth: 校验凭据
-  Auth->>Db: 查询用户与权限
+  Auth->>Db: 查询用户和权限
   Db-->>Auth: 返回用户记录
   Auth-->>Api: 签发访问令牌
-  Api-->>Client: 返回登录结果`,
+  Api-->>Web: 返回登录结果
+  Web-->>Visitor: 进入工作台`,
   },
   {
-    id: 'state-draft',
+    id: 'state-document-lifecycle',
     type: 'state',
-    name: '草稿状态',
-    description: '图表从编辑到渲染完成的状态流。',
+    name: '文档生命周期',
+    description: '技术文档从草稿、评审、发布到归档的状态流转。',
     code: `stateDiagram-v2
   [*] --> Draft
-  Draft --> Rendering: source changed
-  Rendering --> Ready: render success
-  Rendering --> Error: render failed
-  Error --> Draft: edit again
-  Ready --> Draft: continue editing`,
+  Draft --> InReview: submit
+  InReview --> Draft: changes requested
+  InReview --> Approved: approved
+  Approved --> Published: publish
+  Published --> Archived: retire
+  Archived --> [*]
+  Draft --> Archived: discard`,
   },
   {
-    id: 'state-order',
+    id: 'state-payment-flow',
     type: 'state',
-    name: '订单状态',
-    description: '订单生命周期状态机。',
+    name: '支付状态机',
+    description: '订单支付从创建到完成、失败、退款的状态变化。',
     code: `stateDiagram-v2
   [*] --> Created
-  Created --> Paid: payment confirmed
-  Paid --> Fulfilled: shipped
-  Paid --> Refunded: refund requested
+  Created --> PendingPayment: checkout
+  PendingPayment --> Paid: payment confirmed
+  PendingPayment --> Failed: payment failed
+  Failed --> PendingPayment: retry
+  Paid --> Fulfilled: ship order
+  Paid --> Refunding: refund requested
+  Refunding --> Refunded: refund completed
   Fulfilled --> Completed: received
-  Refunded --> [*]
-  Completed --> [*]`,
+  Completed --> [*]
+  Refunded --> [*]`,
   },
   {
-    id: 'flowchart-generation',
+    id: 'flowchart-rendering-decision',
     type: 'flowchart',
-    name: '图表生成',
-    description: 'PixelGraph 第一阶段核心闭环。',
+    name: '渲染决策流程',
+    description: '根据图表类型选择 SQL ER 或 Mermaid 渲染路径。',
+    code: `flowchart TD
+  Start([用户修改源码]) --> Detect{当前图表类型}
+  Detect -->|SQL ER| ParseSql[解析 CREATE TABLE]
+  Detect -->|Mermaid| ParseMermaid[解析 Mermaid 语法]
+  ParseSql --> HasTables{找到数据表?}
+  HasTables -->|是| BuildGraph[构建 ER 图模型]
+  HasTables -->|否| SqlError[显示 SQL 提示]
+  ParseMermaid --> MermaidOk{语法通过?}
+  MermaidOk -->|是| RenderSvg[生成 SVG]
+  MermaidOk -->|否| MermaidError[显示语法错误]
+  BuildGraph --> Preview[更新预览画布]
+  RenderSvg --> Preview
+  SqlError --> EditAgain[返回编辑]
+  MermaidError --> EditAgain`,
+  },
+  {
+    id: 'flowchart-release-check',
+    type: 'flowchart',
+    name: '发布验收流程',
+    description: '从功能完成到浏览器验收和构建检查的发布前流程。',
     code: `flowchart LR
-  Input[输入 Mermaid 文本] --> Debounce[防抖等待]
-  Debounce --> Render[Mermaid 渲染]
-  Render --> Preview[实时预览]
-  Preview --> Export[导出 SVG PNG Markdown]
-  Input --> Storage[本地保存草稿]
-  Render --> Error[错误提示]`,
-  },
-  {
-    id: 'flowchart-review',
-    type: 'flowchart',
-    name: '方案评审',
-    description: '技术方案从提交到发布的流程。',
-    code: `flowchart TB
-  Draft[编写方案] --> Review[团队评审]
-  Review --> Approved{是否通过}
-  Approved -->|是| Publish[发布到文档库]
-  Approved -->|否| Revise[修改方案]
-  Revise --> Review`,
+  Code[完成实现] --> Build[运行构建]
+  Build --> BuildOk{构建通过?}
+  BuildOk -->|否| FixBuild[修复类型或打包问题]
+  FixBuild --> Build
+  BuildOk -->|是| Browser[浏览器验收]
+  Browser --> VisualOk{界面无重叠?}
+  VisualOk -->|否| Polish[调整布局和样式]
+  Polish --> Browser
+  VisualOk -->|是| ExportCheck[验证导出]
+  ExportCheck --> Ready([进入交付])`,
   },
 ];
 
