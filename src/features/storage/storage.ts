@@ -27,6 +27,8 @@ export interface StoredCanvasSettings {
   transparentExport: boolean;
 }
 
+export type StoredMermaidStyleSettings = Record<DiagramType, MermaidStyleSettings>;
+
 function canUseStorage(): boolean {
   return typeof window !== 'undefined' && Boolean(window.localStorage);
 }
@@ -131,11 +133,41 @@ export function writeStoredErDisplaySettings(settings: ErDisplaySettings): void 
   writeJsonSetting(storageKeys.erDisplaySettings, settings);
 }
 
-export function readStoredMermaidStyleSettings(fallback: MermaidStyleSettings): MermaidStyleSettings {
-  return readJsonSetting(storageKeys.mermaidStyleSettings, fallback);
+const diagramTypes: DiagramType[] = ['er', 'class', 'sequence', 'state', 'flowchart'];
+
+function isMermaidStyleSetting(value: unknown): value is Partial<MermaidStyleSettings> {
+  return Boolean(value && typeof value === 'object' && ('fontSize' in value || 'rankSpacing' in value || 'lineColor' in value));
 }
 
-export function writeStoredMermaidStyleSettings(settings: MermaidStyleSettings): void {
+function normalizeMermaidStyleSettings(value: unknown, fallback: StoredMermaidStyleSettings): StoredMermaidStyleSettings {
+  if (!value || typeof value !== 'object') return fallback;
+
+  if (isMermaidStyleSetting(value)) {
+    return Object.fromEntries(diagramTypes.map((type) => [type, { ...fallback[type], ...value }])) as StoredMermaidStyleSettings;
+  }
+
+  const scoped = value as Partial<Record<DiagramType, unknown>>;
+  return Object.fromEntries(
+    diagramTypes.map((type) => [
+      type,
+      isMermaidStyleSetting(scoped[type]) ? { ...fallback[type], ...scoped[type] } : fallback[type],
+    ]),
+  ) as StoredMermaidStyleSettings;
+}
+
+export function readStoredMermaidStyleSettings(fallback: StoredMermaidStyleSettings): StoredMermaidStyleSettings {
+  if (!canUseStorage()) return fallback;
+  const raw = window.localStorage.getItem(storageKeys.mermaidStyleSettings);
+  if (!raw) return fallback;
+
+  try {
+    return normalizeMermaidStyleSettings(JSON.parse(raw), fallback);
+  } catch {
+    return fallback;
+  }
+}
+
+export function writeStoredMermaidStyleSettings(settings: StoredMermaidStyleSettings): void {
   writeJsonSetting(storageKeys.mermaidStyleSettings, settings);
 }
 

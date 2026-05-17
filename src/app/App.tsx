@@ -31,6 +31,7 @@ import {
   writeStoredType,
   type Locale,
   type StoredCanvasSettings,
+  type StoredMermaidStyleSettings,
   type ThemeMode,
 } from '../features/storage/storage';
 import { getTemplateById, getTemplatesByType } from '../features/templates/templates';
@@ -104,11 +105,31 @@ function getTemplateForType(type: DiagramType, erInputMode: ErInputMode): Diagra
 }
 
 function formatSource(source: string): string {
-  return source
+  const trimmedLines = source
     .split('\n')
     .map((line) => line.replace(/\s+$/u, ''))
     .join('\n')
     .trim();
+  const lines = trimmedLines.split('\n');
+  if (/^(classDiagram|sequenceDiagram|stateDiagram-v2|erDiagram)\b/iu.test(lines[0]?.trim() ?? '')) {
+    return lines
+      .map((line, index) => {
+        if (index === 0 || !line.trim()) return line.trim();
+        return `  ${line.trim()}`;
+      })
+      .join('\n');
+  }
+
+  if (/^(flowchart|graph)\b/iu.test(lines[0]?.trim() ?? '')) {
+    return lines
+      .map((line, index) => {
+        if (index === 0 || !line.trim()) return line.trim();
+        return `  ${line.trim()}`;
+      })
+      .join('\n');
+  }
+
+  return trimmedLines;
 }
 
 function formatSqlSource(source: string): string {
@@ -178,6 +199,17 @@ function getThemeMermaidDefaults(theme: ThemeMode): MermaidStyleSettings {
   return theme === 'dark' ? darkMermaidStyleSettings : lightMermaidStyleSettings;
 }
 
+function getThemeMermaidSettingsByType(theme: ThemeMode): StoredMermaidStyleSettings {
+  const defaults = getThemeMermaidDefaults(theme);
+  return {
+    class: defaults,
+    er: defaults,
+    flowchart: defaults,
+    sequence: defaults,
+    state: defaults,
+  };
+}
+
 function getThemeErDefaults(theme: ThemeMode): ErDisplaySettings {
   return theme === 'dark' ? darkErDisplaySettings : lightErDisplaySettings;
 }
@@ -192,6 +224,16 @@ function migrateMermaidSettings(settings: MermaidStyleSettings, theme: ThemeMode
   return {
     ...replaceThemeDefault(settings, previous, getThemeMermaidDefaults(theme), ['lineColor', 'nodeBorderColor', 'nodeFillColor', 'textColor']),
     sequenceNumbers: true,
+  };
+}
+
+function migrateMermaidSettingsByType(settings: StoredMermaidStyleSettings, theme: ThemeMode): StoredMermaidStyleSettings {
+  return {
+    class: migrateMermaidSettings(settings.class, theme),
+    er: migrateMermaidSettings(settings.er, theme),
+    flowchart: migrateMermaidSettings(settings.flowchart, theme),
+    sequence: migrateMermaidSettings(settings.sequence, theme),
+    state: migrateMermaidSettings(settings.state, theme),
   };
 }
 
@@ -227,7 +269,9 @@ export function App() {
   const [exportSvg, setExportSvg] = useState('');
   const [sqlErError, setSqlErError] = useState<string | null>(null);
   const [canvasSettings, setCanvasSettings] = useState<StoredCanvasSettings>(() => migrateCanvasSettings(readStoredCanvasSettings(getThemeCanvasDefaults(readStoredTheme())), readStoredTheme()));
-  const [mermaidStyleSettings, setMermaidStyleSettings] = useState<MermaidStyleSettings>(() => migrateMermaidSettings(readStoredMermaidStyleSettings(getThemeMermaidDefaults(readStoredTheme())), readStoredTheme()));
+  const [mermaidStyleSettingsByType, setMermaidStyleSettingsByType] = useState<StoredMermaidStyleSettings>(() =>
+    migrateMermaidSettingsByType(readStoredMermaidStyleSettings(getThemeMermaidSettingsByType(readStoredTheme())), readStoredTheme()),
+  );
   const [erDisplaySettings, setErDisplaySettings] = useState<ErDisplaySettings>(() => ({
     ...migrateErSettings(readStoredErDisplaySettings(getThemeErDefaults(readStoredTheme())), readStoredTheme()),
     viewMode: readStoredErViewMode(),
@@ -250,12 +294,19 @@ export function App() {
   const sourcePlaceholder = getSourcePlaceholder(diagramType, erInputMode, text);
   const sourceActionLabel = getSourceActionLabel(diagramType, erInputMode, text);
   const mermaidDirective = getDiagramDirective(source);
+  const mermaidStyleSettings = mermaidStyleSettingsByType[diagramType];
+  const setCurrentMermaidStyleSettings = (updater: (value: MermaidStyleSettings) => MermaidStyleSettings): void => {
+    setMermaidStyleSettingsByType((settings) => ({
+      ...settings,
+      [diagramType]: updater(settings[diagramType]),
+    }));
+  };
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     writeStoredTheme(theme);
     setCanvasSettings((settings) => migrateCanvasSettings(settings, theme));
-    setMermaidStyleSettings((settings) => migrateMermaidSettings(settings, theme));
+    setMermaidStyleSettingsByType((settings) => migrateMermaidSettingsByType(settings, theme));
     setErDisplaySettings((settings) => ({
       ...migrateErSettings(settings, theme),
       viewMode: settings.viewMode,
@@ -280,8 +331,8 @@ export function App() {
   }, [canvasSettings]);
 
   useEffect(() => {
-    writeStoredMermaidStyleSettings(mermaidStyleSettings);
-  }, [mermaidStyleSettings]);
+    writeStoredMermaidStyleSettings(mermaidStyleSettingsByType);
+  }, [mermaidStyleSettingsByType]);
 
   useEffect(() => {
     writeStoredErDisplaySettings(erDisplaySettings);
@@ -349,7 +400,7 @@ export function App() {
 
   function resetSettings(): void {
     setCanvasSettings(getThemeCanvasDefaults(theme));
-    setMermaidStyleSettings(getThemeMermaidDefaults(theme));
+    setMermaidStyleSettingsByType(getThemeMermaidSettingsByType(theme));
     setErDisplaySettings(getThemeErDefaults(theme));
     setZoom(1);
     setResetRequest((value) => value + 1);
@@ -529,14 +580,14 @@ export function App() {
               {(diagramType === 'flowchart' || diagramType === 'class' || diagramType === 'state') ? (
                 <label>
                   {text.rankSpacing}
-                  <input type="range" min="32" max="120" step="4" value={mermaidStyleSettings.rankSpacing} onChange={(event) => setMermaidStyleSettings((value) => ({ ...value, rankSpacing: Number(event.target.value) }))} />
+                  <input type="range" min="32" max="120" step="4" value={mermaidStyleSettings.rankSpacing} onChange={(event) => setCurrentMermaidStyleSettings((value) => ({ ...value, rankSpacing: Number(event.target.value) }))} />
                   <span>{mermaidStyleSettings.rankSpacing}px</span>
                 </label>
               ) : null}
-              {diagramType === 'flowchart' ? (
+              {diagramType === 'flowchart' || diagramType === 'state' ? (
                 <label>
                   {text.curveStyle}
-                  <select value={mermaidStyleSettings.curve} onChange={(event) => setMermaidStyleSettings((value) => ({ ...value, curve: event.target.value as MermaidCurve }))}>
+                  <select value={mermaidStyleSettings.curve} onChange={(event) => setCurrentMermaidStyleSettings((value) => ({ ...value, curve: event.target.value as MermaidCurve }))}>
                     <option value="basis">{text.curveBasis}</option>
                     <option value="linear">{text.curveLinear}</option>
                     <option value="step">{text.curveStep}</option>
@@ -545,42 +596,42 @@ export function App() {
               ) : null}
               <label>
                 {text.fontSize}
-                <input type="range" min="11" max="22" step="1" value={mermaidStyleSettings.fontSize} onChange={(event) => setMermaidStyleSettings((value) => ({ ...value, fontSize: Number(event.target.value) }))} />
+                <input type="range" min="11" max="22" step="1" value={mermaidStyleSettings.fontSize} onChange={(event) => setCurrentMermaidStyleSettings((value) => ({ ...value, fontSize: Number(event.target.value) }))} />
                 <span>{mermaidStyleSettings.fontSize}px</span>
               </label>
               <label>
                 {text.nodeFillColor}
-                <input type="color" value={mermaidStyleSettings.nodeFillColor} onChange={(event) => setMermaidStyleSettings((value) => ({ ...value, nodeFillColor: event.target.value }))} />
+                <input type="color" value={mermaidStyleSettings.nodeFillColor} onChange={(event) => setCurrentMermaidStyleSettings((value) => ({ ...value, nodeFillColor: event.target.value }))} />
                 <span>{mermaidStyleSettings.nodeFillColor}</span>
               </label>
               <label>
                 {text.nodeBorderColor}
-                <input type="color" value={mermaidStyleSettings.nodeBorderColor} onChange={(event) => setMermaidStyleSettings((value) => ({ ...value, nodeBorderColor: event.target.value }))} />
+                <input type="color" value={mermaidStyleSettings.nodeBorderColor} onChange={(event) => setCurrentMermaidStyleSettings((value) => ({ ...value, nodeBorderColor: event.target.value }))} />
                 <span>{mermaidStyleSettings.nodeBorderColor}</span>
               </label>
               <label>
                 {text.lineColor}
-                <input type="color" value={mermaidStyleSettings.lineColor} onChange={(event) => setMermaidStyleSettings((value) => ({ ...value, lineColor: event.target.value }))} />
+                <input type="color" value={mermaidStyleSettings.lineColor} onChange={(event) => setCurrentMermaidStyleSettings((value) => ({ ...value, lineColor: event.target.value }))} />
                 <span>{mermaidStyleSettings.lineColor}</span>
               </label>
               <label>
                 {text.textColor}
-                <input type="color" value={mermaidStyleSettings.textColor} onChange={(event) => setMermaidStyleSettings((value) => ({ ...value, textColor: event.target.value }))} />
+                <input type="color" value={mermaidStyleSettings.textColor} onChange={(event) => setCurrentMermaidStyleSettings((value) => ({ ...value, textColor: event.target.value }))} />
                 <span>{mermaidStyleSettings.textColor}</span>
               </label>
               {diagramType === 'sequence' ? (
                 <>
                   <label>
                     {text.actorMargin}
-                    <input type="range" min="32" max="120" step="4" value={mermaidStyleSettings.actorMargin} onChange={(event) => setMermaidStyleSettings((value) => ({ ...value, actorMargin: Number(event.target.value) }))} />
+                    <input type="range" min="32" max="120" step="4" value={mermaidStyleSettings.actorMargin} onChange={(event) => setCurrentMermaidStyleSettings((value) => ({ ...value, actorMargin: Number(event.target.value) }))} />
                     <span>{mermaidStyleSettings.actorMargin}px</span>
                   </label>
                   <label className="inline-check">
-                    <input type="checkbox" checked={mermaidStyleSettings.sequenceNumbers} onChange={(event) => setMermaidStyleSettings((value) => ({ ...value, sequenceNumbers: event.target.checked }))} />
+                    <input type="checkbox" checked={mermaidStyleSettings.sequenceNumbers} onChange={(event) => setCurrentMermaidStyleSettings((value) => ({ ...value, sequenceNumbers: event.target.checked }))} />
                     {text.sequenceNumbers}
                   </label>
                   <label className="inline-check">
-                    <input type="checkbox" checked={mermaidStyleSettings.mirrorActors} onChange={(event) => setMermaidStyleSettings((value) => ({ ...value, mirrorActors: event.target.checked }))} />
+                    <input type="checkbox" checked={mermaidStyleSettings.mirrorActors} onChange={(event) => setCurrentMermaidStyleSettings((value) => ({ ...value, mirrorActors: event.target.checked }))} />
                     {text.mirrorActors}
                   </label>
                 </>

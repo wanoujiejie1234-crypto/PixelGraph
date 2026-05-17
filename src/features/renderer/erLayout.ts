@@ -1,10 +1,27 @@
-import ELK from 'elkjs/lib/elk.bundled.js';
 import type { Node, XYPosition } from '@xyflow/react';
 import { getNodeSize, type ErGraphEdge, type ErGraphNode, type ErLayoutDirection } from './erGraphModel';
 
-const elk = new ELK();
+type ElkLayoutResult = {
+  children?: Array<{
+    id: string;
+    x?: number;
+    y?: number;
+  }>;
+};
+
+type ElkInstance = {
+  layout: (graph: unknown) => Promise<ElkLayoutResult>;
+};
+
+let elkPromise: Promise<ElkInstance> | null = null;
+
+function loadElk(): Promise<ElkInstance> {
+  elkPromise ??= import('elkjs/lib/elk.bundled.js').then((module) => new module.default() as ElkInstance);
+  return elkPromise;
+}
 
 export async function layoutErGraph(nodes: ErGraphNode[], edges: ErGraphEdge[], direction: ErLayoutDirection): Promise<Record<string, XYPosition>> {
+  const elk = await loadElk();
   const graph = {
     children: nodes.map((node) => {
       const size = getNodeSize(node);

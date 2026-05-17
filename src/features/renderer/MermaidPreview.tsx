@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { serializeSvgElement } from '../export/svgElementExport';
 
 interface MermaidPreviewStyleSettings {
+  curve: string;
   lineColor: string;
   nodeBorderColor: string;
   nodeFillColor: string;
@@ -19,6 +20,10 @@ interface Props {
 
 function isSequenceDiagram(source: string): boolean {
   return /^sequenceDiagram\b/iu.test(source.trimStart());
+}
+
+function isStateDiagram(source: string): boolean {
+  return /^stateDiagram(?:-v2)?\b/iu.test(source.trimStart());
 }
 
 function hideNativeSequenceNumbers(root: HTMLElement): void {
@@ -66,6 +71,16 @@ function isEditableLabel(element: Element): element is HTMLElement {
   return Boolean(element.closest('.edgeLabel'));
 }
 
+function applyStateLineStyle(root: HTMLElement, source: string, curve: string | undefined): void {
+  if (!isStateDiagram(source)) return;
+
+  root.querySelectorAll<SVGPathElement>('.edgePath path, path.transition, g.edge path').forEach((path) => {
+    path.style.strokeLinejoin = curve === 'step' ? 'miter' : 'round';
+    path.style.strokeLinecap = curve === 'linear' ? 'butt' : 'round';
+    if (curve === 'step') path.style.strokeDasharray = '0';
+  });
+}
+
 export function MermaidPreview({ onExportSvgReady, svg, source, styleSettings, onSourceChange }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const sourceRef = useRef(source);
@@ -89,6 +104,7 @@ export function MermaidPreview({ onExportSvgReady, svg, source, styleSettings, o
     if (!root) return;
 
     applyHierarchicalSequenceNumbers(root, sourceRef.current, Boolean(styleSettings?.sequenceNumbers));
+    applyStateLineStyle(root, sourceRef.current, styleSettings?.curve);
 
     const labels = Array.from(root.querySelectorAll('.edgeLabel p'));
     labels.forEach((label) => {
@@ -134,7 +150,7 @@ export function MermaidPreview({ onExportSvgReady, svg, source, styleSettings, o
         label.removeEventListener('blur', handleBlur);
       });
     };
-  }, [onExportSvgReady, onSourceChange, source, styleSettings?.sequenceNumbers, svg]);
+  }, [onExportSvgReady, onSourceChange, source, styleSettings?.curve, styleSettings?.sequenceNumbers, svg]);
 
   return <div className="svg-preview" dangerouslySetInnerHTML={{ __html: svg }} ref={rootRef} style={previewStyle} />;
 }

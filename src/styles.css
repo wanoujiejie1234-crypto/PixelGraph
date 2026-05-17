@@ -736,8 +736,11 @@ textarea {
 }
 
 .er-table-node {
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
+  min-height: 0;
   overflow: hidden;
   border: 1px solid var(--er-stroke, var(--ink));
   border-radius: 8px;
@@ -765,6 +768,7 @@ textarea {
 }
 
 .er-table-head {
+  flex: 0 0 auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 32px;
   align-items: center;
@@ -805,6 +809,7 @@ textarea {
 }
 
 .er-table-name {
+  flex: 0 0 auto;
   padding: 7px 10px 0;
   color: color-mix(in srgb, var(--er-stroke, var(--note)) 72%, var(--note));
   font-family: var(--mono);
@@ -813,17 +818,34 @@ textarea {
 
 .er-column-list {
   display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 6px 0;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--er-accent, var(--accent)) 54%, transparent) transparent;
 }
 
 .er-column-row {
   min-height: 30px;
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) minmax(70px, auto);
+  grid-template-columns: 34px minmax(0, 1fr) minmax(70px, 34%);
   align-items: center;
   gap: 8px;
   padding: 0 10px;
   border-top: 1px solid color-mix(in srgb, var(--border) 54%, transparent);
+}
+
+.er-column-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.er-column-list::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--er-accent, var(--accent)) 48%, transparent);
+  background-clip: content-box;
 }
 
 .er-column-row:first-child {
@@ -851,15 +873,22 @@ textarea {
 }
 
 .er-column-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-family: var(--mono);
   font-size: 0.78em;
+  white-space: nowrap;
 }
 
 .er-column-type,
 .er-column-empty {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: color-mix(in srgb, var(--er-stroke, var(--note)) 70%, var(--note));
   font-family: var(--mono);
   font-size: 0.68em;
+  white-space: nowrap;
 }
 
 .er-column-empty {

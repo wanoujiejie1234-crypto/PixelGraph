@@ -1,4 +1,3 @@
-import mermaid from 'mermaid';
 import type { RenderResult } from '../diagrams/types';
 
 export type MermaidCurve = 'basis' | 'linear' | 'step';
@@ -28,6 +27,15 @@ export const defaultMermaidStyleSettings: MermaidStyleSettings = {
   sequenceNumbers: true,
   textColor: '#18181B',
 };
+
+type MermaidApi = typeof import('mermaid')['default'];
+
+let mermaidApiPromise: Promise<MermaidApi> | null = null;
+
+function loadMermaid(): Promise<MermaidApi> {
+  mermaidApiPromise ??= import('mermaid').then((module) => module.default);
+  return mermaidApiPromise;
+}
 
 export function getDiagramDirective(source: string): string {
   const firstLine = source.trimStart().split(/\r?\n/u)[0]?.trim() ?? '';
@@ -157,13 +165,17 @@ function prepareMermaidSource(source: string, settings: MermaidStyleSettings): s
   return settings.sequenceNumbers || hadNativeAutonumber ? prefixSequenceMessages(withoutInlineLegend) : withoutInlineLegend;
 }
 
-function configureMermaid(settings: MermaidStyleSettings): void {
-  mermaid.initialize({
+function configureMermaid(mermaidApi: MermaidApi, settings: MermaidStyleSettings): void {
+  mermaidApi.initialize({
     startOnLoad: false,
     securityLevel: 'strict',
     theme: 'base',
     flowchart: {
       curve: settings.curve,
+      nodeSpacing: settings.rankSpacing,
+      rankSpacing: settings.rankSpacing,
+    },
+    state: {
       nodeSpacing: settings.rankSpacing,
       rankSpacing: settings.rankSpacing,
     },
@@ -209,8 +221,6 @@ function normalizeError(error: unknown): string {
 }
 
 export async function renderMermaid(source: string, settings: MermaidStyleSettings = defaultMermaidStyleSettings): Promise<RenderResult> {
-  configureMermaid(settings);
-
   if (!source.trim()) {
     return {
       status: 'error',
@@ -220,10 +230,12 @@ export async function renderMermaid(source: string, settings: MermaidStyleSettin
   }
 
   try {
+    const mermaidApi = await loadMermaid();
+    configureMermaid(mermaidApi, settings);
     const renderSource = prepareMermaidSource(source, settings);
-    await mermaid.parse(renderSource);
+    await mermaidApi.parse(renderSource);
     const renderId = `pixelgraph-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const { svg } = await mermaid.render(renderId, renderSource);
+    const { svg } = await mermaidApi.render(renderId, renderSource);
 
     return {
       status: 'success',

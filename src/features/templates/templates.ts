@@ -43,7 +43,7 @@ CREATE TABLE order_items (
     id: 'er-mermaid-commerce',
     type: 'er',
     name: 'Mermaid 订单 ER',
-    description: '兼容 Mermaid ER 语法的订单、商品和明细关系示例。',
+    description: '兼容 Mermaid ER 语法的客户、订单、商品和明细关系示例。',
     erInputMode: 'mermaid',
     code: `erDiagram
   CUSTOMER ||--o{ ORDER : places
@@ -76,7 +76,7 @@ CREATE TABLE order_items (
     id: 'class-rendering-workbench',
     type: 'class',
     name: '渲染工作台',
-    description: '描述编辑器状态、渲染器、导出服务之间的依赖关系。',
+    description: '描述编辑器、渲染器、预览画布和导出服务之间的职责边界。',
     code: `classDiagram
   class WorkspaceState {
     +DiagramType diagramType
@@ -108,7 +108,7 @@ CREATE TABLE order_items (
     id: 'class-domain-model',
     type: 'class',
     name: '领域模型',
-    description: '描述项目、图表定义、模板和渲染结果之间的结构关系。',
+    description: '描述图表定义、模板、渲染结果和本地草稿之间的结构关系。',
     code: `classDiagram
   class DiagramDefinition {
     +DiagramType id
@@ -193,7 +193,7 @@ CREATE TABLE order_items (
     id: 'state-payment-flow',
     type: 'state',
     name: '支付状态机',
-    description: '订单支付从创建到完成、失败、退款的状态变化。',
+    description: '订单支付从创建到成功、失败、退款的状态变化。',
     code: `stateDiagram-v2
   [*] --> Created
   Created --> PendingPayment: checkout

@@ -16,6 +16,14 @@ function downloadBlob(blob: Blob, filename: string): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+function getTimestamp(): string {
+  return new Date().toISOString().replace(/[:.]/gu, '-').slice(0, 19);
+}
+
+function getFilename(extension: string): string {
+  return `pixelgraph-diagram-${getTimestamp()}.${extension}`;
+}
+
 function svgToDataUrl(svg: string): string {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
@@ -45,7 +53,7 @@ export function downloadSvg(svg: string): void {
     throw new Error('当前没有可导出的 SVG。');
   }
 
-  downloadBlob(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }), 'pixelgraph-diagram.svg');
+  downloadBlob(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }), getFilename('svg'));
 }
 
 export function downloadMarkdown(source: string, language = 'mermaid'): void {
@@ -53,7 +61,7 @@ export function downloadMarkdown(source: string, language = 'mermaid'): void {
     throw new Error('当前没有可导出的源码。');
   }
   const markdown = `\`\`\`${language}\n${source.trim()}\n\`\`\`\n`;
-  downloadBlob(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }), 'pixelgraph-diagram.md');
+  downloadBlob(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }), getFilename('md'));
 }
 
 export async function downloadPng(svg: string, options: PngExportOptions): Promise<void> {
@@ -96,5 +104,5 @@ export async function downloadPng(svg: string, options: PngExportOptions): Promi
     throw new Error('PNG 导出失败：无法生成图片文件。');
   }
 
-  downloadBlob(blob, 'pixelgraph-diagram.png');
+  downloadBlob(blob, getFilename('png'));
 }

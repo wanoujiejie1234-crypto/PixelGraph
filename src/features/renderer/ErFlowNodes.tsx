@@ -19,7 +19,7 @@ function columnEditKind(showComments: boolean): 'column-comment' | 'column-name'
 }
 
 function minSize(node: NodeProps<ErGraphNode>): { height: number; width: number } {
-  if (node.data.kind === 'table') return { height: 96, width: 220 };
+  if (node.data.kind === 'table') return { height: 128, width: 260 };
   if (node.data.kind === 'relationship') return { height: 64, width: 118 };
   if (node.data.kind === 'attribute') return { height: 46, width: 132 };
   return { height: 58, width: 138 };
