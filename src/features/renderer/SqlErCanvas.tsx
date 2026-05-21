@@ -15,6 +15,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { Messages } from '../i18n/messages';
+import { CanvasEmptyState } from './CanvasEmptyState';
 import {
   readStoredErEdgeLabels,
   readStoredErLocalLabels,
@@ -26,7 +27,7 @@ import {
   writeStoredErNodeSizes,
   type StoredErEdgeLabel,
 } from '../storage/storage';
-import { EditableErEdge } from './ErFlowEdges';
+import { CrowFootErEdge, EditableErEdge } from './ErFlowEdges';
 import { ChenAttributeNode, ChenEntityNode, ChenRelationshipNode, DatabaseTableNode } from './ErFlowNodes';
 import { applyPositions, layoutErGraph } from './erLayout';
 import { exportErGraphToSvg } from './erSvgExport';
@@ -39,6 +40,8 @@ import {
   type ErGraphNode,
   type ErViewMode,
 } from './erGraphModel';
+import type { DiagramDiagnostic } from './diagnostics';
+import { chenFromEdgeId, chenToEdgeId, columnNodeId, databaseEdgeId, entityNodeId, relationshipNodeId, relationshipTargetId, tableNodeId } from './erIds';
 import { modelToSql, parseSqlErModel, validateSqlErSource, type SqlColumn, type SqlErModel, type SqlRelationship, type SqlTable } from './sqlErModel';
 
 export type { ErDisplaySettings, ErViewMode };
@@ -49,7 +52,8 @@ interface Props {
   resetRequest: number;
   source: string;
   text: Messages;
-  transparentExport: boolean;
+  themeMode?: 'light' | 'dark';
+  onDiagnosticsChange?: (diagnostics: DiagramDiagnostic[]) => void;
   onDisplaySettingsChange: (settings: ErDisplaySettings) => void;
   onErrorChange: (error: string | null) => void;
   onExportSvgReady: (svg: string) => void;
@@ -64,6 +68,7 @@ const nodeTypes = {
 };
 
 const edgeTypes = {
+  crowFootEr: CrowFootErEdge,
   editableEr: EditableErEdge,
 };
 
@@ -79,8 +84,11 @@ export const defaultErDisplaySettings: ErDisplaySettings = {
   fontSize: 15,
   layoutDirection: 'LR',
   nodeScale: 1,
+  notationStyle: 'database',
+  showConstraints: true,
   showCardinality: true,
   showComments: true,
+  showRelationshipRoles: true,
   showTypes: true,
   strokeColor: '#171817',
   textColor: '#171817',
@@ -217,8 +225,9 @@ function safeValidateSqlErSource(source: string): ReturnType<typeof validateSqlE
     return {
       diagnostics: [
         {
+          code: 'sql-er-validation-failed',
           level: 'error',
-          message: error instanceof Error ? `SQL ER 校验失败：${error.message}` : 'SQL ER 校验失败，请检查输入内容。',
+          message: error instanceof Error ? `SQL ER ?????${error.message}` : 'SQL ER ?????????????',
         },
       ],
       hasFatalError: true,
@@ -240,7 +249,8 @@ function InnerSqlErCanvas({
   resetRequest,
   source,
   text,
-  transparentExport,
+  themeMode = 'light',
+  onDiagnosticsChange,
   onDisplaySettingsChange,
   onErrorChange,
   onExportSvgReady,
@@ -258,7 +268,8 @@ function InnerSqlErCanvas({
   const [edgeLabels, setEdgeLabels] = useState<Record<string, StoredErEdgeLabel>>(() => readStoredErEdgeLabels(positionScope));
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [layoutRevision, setLayoutRevision] = useState(0);
-  const validation = useMemo(() => safeValidateSqlErSource(source), [source]);
+  const isBlankSource = source.trim().length === 0;
+  const validation = useMemo(() => (isBlankSource ? { diagnostics: [], hasFatalError: false } : safeValidateSqlErSource(source)), [isBlankSource, source]);
   const validationMessage = useMemo(() => validation.diagnostics.map((item) => item.message).join('\n'), [validation.diagnostics]);
   const model = useMemo(
     () => (validation.hasFatalError ? emptyModel : safeParseSqlErModel(source)),
@@ -266,6 +277,55 @@ function InnerSqlErCanvas({
   );
   const modelSignature = useMemo(() => getModelSignature(model, displaySettings), [model, displaySettings]);
   const collapsedSignature = useMemo(() => JSON.stringify(collapsedTables), [collapsedTables]);
+  const hasRelationshipRoles = useMemo(() => model.relationships.some((relationship) => relationship.roleFrom || relationship.roleTo), [model.relationships]);
+  const hasRelationshipConstraints = useMemo(() => model.relationships.some((relationship) => relationship.constraintText), [model.relationships]);
+
+  const diagnosticMaps = useMemo(() => {
+    const nodeStates: Record<string, 'warning' | 'error'> = {};
+    const edgeStates: Record<string, 'warning' | 'error'> = {};
+
+    const elevate = (current: 'warning' | 'error' | undefined, next: 'warning' | 'error'): 'warning' | 'error' =>
+      current === 'error' || next === 'error' ? 'error' : 'warning';
+
+    validation.diagnostics.forEach((item) => {
+      if (!item.targetId || !item.targetKind) return;
+
+      if (item.targetKind === 'table' || item.targetKind === 'column') {
+        nodeStates[item.targetId] = elevate(nodeStates[item.targetId], item.level);
+        if (item.targetKind === 'table' && item.targetId.startsWith('table:')) {
+          const tableName = item.targetId.slice('table:'.length);
+          nodeStates[entityNodeId(tableName)] = elevate(nodeStates[entityNodeId(tableName)], item.level);
+        }
+        if (item.targetKind === 'column' && item.targetId.startsWith('column:')) {
+          const [, tableName, columnName] = item.targetId.split(':');
+          if (tableName && columnName) {
+            const normalizedColumnId = columnNodeId(tableName, columnName);
+            nodeStates[normalizedColumnId] = elevate(nodeStates[normalizedColumnId], item.level);
+          }
+        }
+        return;
+      }
+
+      if (item.targetKind === 'relationship') {
+        const value = item.targetId;
+        const relationship = model.relationships.find((entry) => relationshipTargetId(entry.fromTable, entry.toTable) === value);
+        if (!relationship) return;
+        const nodeId = relationshipNodeId(relationship);
+        nodeStates[nodeId] = elevate(nodeStates[nodeId], item.level);
+        edgeStates[databaseEdgeId(relationship.fromTable, relationship.toTable)] = elevate(edgeStates[databaseEdgeId(relationship.fromTable, relationship.toTable)], item.level);
+        edgeStates[chenFromEdgeId(relationship)] = elevate(edgeStates[chenFromEdgeId(relationship)], item.level);
+        edgeStates[chenToEdgeId(relationship)] = elevate(edgeStates[chenToEdgeId(relationship)], item.level);
+      }
+    });
+
+    model.tables.forEach((table) => {
+      const tableId = tableNodeId(table.name);
+      const entityId = entityNodeId(table.name);
+      if (nodeStates[tableId]) nodeStates[entityId] = elevate(nodeStates[entityId], nodeStates[tableId]);
+    });
+
+    return { edgeStates, nodeStates };
+  }, [model.relationships, model.tables, validation.diagnostics]);
 
   const commitDisplay = useCallback(
     (next: Partial<ErDisplaySettings>) => {
@@ -285,6 +345,8 @@ function InnerSqlErCanvas({
     try {
       return buildErGraph(model, {
         collapsedTables,
+        diagnosticEdgeStates: diagnosticMaps.edgeStates,
+        diagnosticNodeStates: diagnosticMaps.nodeStates,
         display: displaySettings,
         edgeLabels,
         localLabels,
@@ -302,7 +364,20 @@ function InnerSqlErCanvas({
       onErrorChange('ER 图模型构建失败，请检查表名、字段名和外键关系。');
       return { edges: [], nodes: [] };
     }
-  }, [collapsedTables, commitModel, displaySettings, edgeLabels, localLabels, model, nodeSizes, onErrorChange, positions, selectedId]);
+  }, [collapsedTables, commitModel, diagnosticMaps.edgeStates, diagnosticMaps.nodeStates, displaySettings, edgeLabels, localLabels, model, nodeSizes, onErrorChange, positions, selectedId]);
+
+  useEffect(() => {
+    onDiagnosticsChange?.(
+      validation.diagnostics.map((item) => ({
+        code: item.code,
+        level: item.level,
+        message: item.message,
+        sourceRange: item.sourceRange,
+        targetId: item.targetId,
+        targetKind: item.targetKind,
+      })),
+    );
+  }, [onDiagnosticsChange, validation.diagnostics]);
 
   useEffect(() => {
     if (validation.hasFatalError) {
@@ -374,8 +449,8 @@ function InnerSqlErCanvas({
       onExportSvgReady('');
       return;
     }
-    onExportSvgReady(exportErGraphToSvg(nodes, edges, { transparent: transparentExport }));
-  }, [edges, nodes, onExportSvgReady, transparentExport, validation.hasFatalError]);
+    onExportSvgReady(exportErGraphToSvg(nodes, edges, { transparent: false }));
+  }, [edges, nodes, onExportSvgReady, validation.hasFatalError]);
 
   useEffect(() => {
     if (fitRequest === 0) return;
@@ -424,6 +499,10 @@ function InnerSqlErCanvas({
     );
   }
 
+  if (isBlankSource || graph.nodes.length === 0) {
+    return <CanvasEmptyState diagramType="ER" />;
+  }
+
   return (
     <div
       className="er-flow-shell"
@@ -437,10 +516,13 @@ function InnerSqlErCanvas({
     >
       <div className="er-flow-toolbar" data-no-canvas-pan="true">
         <div className="er-tool-group">
-          <button className={displaySettings.viewMode === 'database' ? 'is-active' : ''} onClick={() => commitDisplay({ viewMode: 'database' })} type="button">
+          <button className={displaySettings.viewMode === 'database' ? 'is-active' : ''} onClick={() => commitDisplay({ notationStyle: 'database', viewMode: 'database' })} type="button">
             {text.databaseEr}
           </button>
-          <button className={displaySettings.viewMode === 'chen' ? 'is-active' : ''} onClick={() => commitDisplay({ viewMode: 'chen' })} type="button">
+          <button className={displaySettings.viewMode === 'crowfoot' ? 'is-active' : ''} onClick={() => commitDisplay({ notationStyle: 'crowfoot', viewMode: 'crowfoot' })} type="button">
+            Crow's Foot
+          </button>
+          <button className={displaySettings.viewMode === 'chen' ? 'is-active' : ''} onClick={() => commitDisplay({ notationStyle: 'chen', viewMode: 'chen' })} type="button">
             {text.chenEr}
           </button>
         </div>
@@ -467,10 +549,24 @@ function InnerSqlErCanvas({
             </button>
           ))}
         </div>
+        {hasRelationshipRoles || hasRelationshipConstraints ? (
+          <div className="er-tool-group">
+            {hasRelationshipRoles ? (
+              <button className={displaySettings.showRelationshipRoles ? 'is-active' : ''} onClick={() => commitDisplay({ showRelationshipRoles: !displaySettings.showRelationshipRoles })} type="button">
+                Roles
+              </button>
+            ) : null}
+            {hasRelationshipConstraints ? (
+              <button className={displaySettings.showConstraints ? 'is-active' : ''} onClick={() => commitDisplay({ showConstraints: !displaySettings.showConstraints })} type="button">
+                Constraints
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <ReactFlow
-        colorMode="light"
+        colorMode={themeMode === 'dark' ? 'dark' : 'light'}
         edgeTypes={edgeTypes}
         edges={edges}
         fitView

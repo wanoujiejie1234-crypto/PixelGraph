@@ -1,8 +1,9 @@
 import type { Edge, Node, XYPosition } from '@xyflow/react';
 import type { SqlColumn, SqlErModel, SqlRelationship, SqlTable } from './sqlErModel';
 import type { StoredErEdgeLabel } from '../storage/storage';
+import { chenFromEdgeId, chenToEdgeId, columnNodeId, databaseEdgeId, entityNodeId, relationshipNodeId, tableNodeId } from './erIds';
 
-export type ErViewMode = 'database' | 'chen';
+export type ErViewMode = 'database' | 'chen' | 'crowfoot';
 export type ErLayoutDirection = 'LR' | 'TB';
 export type ErAttributeVisibility = 'all' | 'keys' | 'none';
 
@@ -13,8 +14,11 @@ export interface ErDisplaySettings {
   fontSize: number;
   layoutDirection: ErLayoutDirection;
   nodeScale: number;
+  notationStyle: 'database' | 'chen' | 'crowfoot';
+  showConstraints: boolean;
   showCardinality: boolean;
   showComments: boolean;
+  showRelationshipRoles: boolean;
   showTypes: boolean;
   strokeColor: string;
   textColor: string;
@@ -27,8 +31,13 @@ export interface ErGraphNodeMetadata {
   table?: SqlTable;
 }
 
+export interface ErTableColumnView extends SqlColumn {
+  diagnosticLevel?: 'warning' | 'error';
+}
+
 export interface ErGraphNodeData extends Record<string, unknown> {
-  columns?: SqlColumn[];
+  columns?: ErTableColumnView[];
+  diagnosticLevel?: 'warning' | 'error';
   display: ErDisplaySettings;
   kind: 'table' | 'entity' | 'attribute' | 'relationship';
   label: string;
@@ -42,6 +51,11 @@ export interface ErGraphNodeData extends Record<string, unknown> {
 
 export interface ErGraphEdgeData extends Record<string, unknown> {
   cardinality?: string;
+  diagnosticLevel?: 'warning' | 'error';
+  relationshipKind?: SqlRelationship['relationshipKind'];
+  roleFrom?: string;
+  roleTo?: string;
+  constraintText?: string;
   display: ErDisplaySettings;
   labelOffset?: { x: number; y: number };
   label?: string;
@@ -65,6 +79,8 @@ export type ErEditTarget =
 
 export interface ErGraphBuildOptions {
   collapsedTables: Record<string, boolean>;
+  diagnosticEdgeStates?: Record<string, 'warning' | 'error'>;
+  diagnosticNodeStates?: Record<string, 'warning' | 'error'>;
   display: ErDisplaySettings;
   localLabels: Record<string, string>;
   edgeLabels: Record<string, StoredErEdgeLabel>;
@@ -90,26 +106,6 @@ function edgeLabelData(id: string, fallback: string | undefined, options: ErGrap
   };
 }
 
-function tableId(tableName: string): string {
-  return `table:${tableName.toLowerCase()}`;
-}
-
-function entityId(tableName: string): string {
-  return `entity:${tableName.toLowerCase()}`;
-}
-
-function columnId(tableName: string, columnName: string): string {
-  return `column:${tableName.toLowerCase()}:${columnName.toLowerCase()}`;
-}
-
-function relationshipId(relationship: SqlRelationship): string {
-  return `relationship:${relationship.id.toLowerCase()}`;
-}
-
-function edgeId(prefix: string, source: string, target: string): string {
-  return `${prefix}:${source}->${target}`;
-}
-
 function tableLabel(table: SqlTable, showComments: boolean): string {
   return showComments && table.comment ? table.comment : table.name;
 }
@@ -122,6 +118,35 @@ function visibleColumns(columns: SqlColumn[], visibility: ErAttributeVisibility)
   if (visibility === 'none') return [];
   if (visibility === 'keys') return columns.filter((column) => column.isPrimaryKey || column.isForeignKey);
   return columns;
+}
+
+function estimatedTextWidth(value: string, fontSize: number): number {
+  const units = Array.from(value).reduce((sum, char) => sum + (/[\u3400-\u9fff]/u.test(char) ? 1 : 0.56), 0);
+  return units * fontSize;
+}
+
+function relationshipContentWidth(node: ErGraphNode): number {
+  const fontSize = Number(node.data.display.fontSize) || 15;
+  const label = String(node.data.label ?? '');
+  return Math.max(176, Math.min(300, estimatedTextWidth(label, Math.max(10, fontSize - 2)) + 64));
+}
+
+function tableContentWidth(node: ErGraphNode): number {
+  const fontSize = Number(node.data.display.fontSize) || 15;
+  const titleWidth = estimatedTextWidth(String(node.data.label ?? ''), fontSize) + 84;
+  const nameWidth =
+    node.data.display.showComments && node.data.metadata.table?.name
+      ? estimatedTextWidth(node.data.metadata.table.name, Math.max(11, fontSize - 2)) + 24
+      : 0;
+  const columnWidth = (node.data.columns ?? []).reduce((maxWidth, column) => {
+    const badgeWidth = column.isPrimaryKey || column.isForeignKey ? 40 : 18;
+    const label = node.data.display.showComments && column.comment ? column.comment : column.name;
+    const labelWidth = estimatedTextWidth(label, Math.max(11, fontSize - 3));
+    const typeWidth = node.data.display.showTypes ? Math.max(70, estimatedTextWidth(column.dataType, Math.max(10, fontSize - 4)) + 14) : 0;
+    return Math.max(maxWidth, badgeWidth + labelWidth + typeWidth + 36);
+  }, 0);
+  const emptyWidth = node.data.columns?.length ? 0 : 160;
+  return Math.max(titleWidth, nameWidth, columnWidth, emptyWidth);
 }
 
 function getPosition(id: string, positions: Record<string, XYPosition>, fallback: XYPosition): XYPosition {
@@ -143,19 +168,28 @@ function defaultNodeSize(node: ErGraphNode): { height: number; width: number } {
   const scale = Math.min(1.45, Math.max(0.72, node.data.display.nodeScale || 1));
   if (node.type === 'databaseTable') {
     const columns = node.data.columns?.length ?? 0;
+    const headerRows = 2 + (node.data.display.showComments && node.data.metadata.table?.name ? 1 : 0);
     return {
-      height: Math.max(96, 58 + columns * 30) * scale,
-      width: 300 * scale,
+      height: Math.max(128, 18 + headerRows * 20 + columns * 30) * scale,
+      width: Math.max(300, tableContentWidth(node)) * scale,
     };
   }
 
   if (node.type === 'chenAttribute') return { height: 54 * scale, width: 178 * scale };
-  if (node.type === 'chenRelationship') return { height: 82 * scale, width: 158 * scale };
+  if (node.type === 'chenRelationship') return { height: 104 * scale, width: relationshipContentWidth(node) * scale };
   return { height: 74 * scale, width: 188 * scale };
 }
 
 function applyNodeSize(node: ErGraphNode, options: ErGraphBuildOptions): ErGraphNode {
-  const size = options.nodeSizes[node.id] ?? defaultNodeSize(node);
+  const defaultSize = defaultNodeSize(node);
+  const stored = options.nodeSizes[node.id];
+  const size =
+    stored == null
+      ? defaultSize
+      : {
+          height: Math.max(stored.height, defaultSize.height),
+          width: Math.max(stored.width, defaultSize.width),
+        };
 
   return {
     ...node,
@@ -171,18 +205,25 @@ function applyNodeSize(node: ErGraphNode, options: ErGraphBuildOptions): ErGraph
 
 export function buildErGraph(model: SqlErModel, options: ErGraphBuildOptions): { edges: ErGraphEdge[]; nodes: ErGraphNode[] } {
   if (options.display.viewMode === 'chen') return buildChenGraph(model, options);
+  if (options.display.viewMode === 'crowfoot') return buildCrowFootGraph(model, options);
   return buildDatabaseGraph(model, options);
 }
 
 function buildDatabaseGraph(model: SqlErModel, options: ErGraphBuildOptions): { edges: ErGraphEdge[]; nodes: ErGraphNode[] } {
   const nodes: ErGraphNode[] = model.tables.map((table, index) => {
-    const id = tableId(table.name);
+    const id = tableNodeId(table.name);
     const collapsed = options.collapsedTables[table.name] ?? false;
-    const columns = collapsed ? [] : visibleColumns(table.columns, options.display.attributeVisibility);
+    const columns = collapsed
+      ? []
+      : visibleColumns(table.columns, options.display.attributeVisibility).map((column) => ({
+          ...column,
+          diagnosticLevel: options.diagnosticNodeStates?.[columnNodeId(table.name, column.name)],
+        }));
 
     const node: ErGraphNode = {
       data: {
         columns,
+        diagnosticLevel: options.diagnosticNodeStates?.[id],
         display: options.display,
         kind: 'table',
         label: tableLabel(table, options.display.showComments),
@@ -202,17 +243,22 @@ function buildDatabaseGraph(model: SqlErModel, options: ErGraphBuildOptions): { 
   });
 
   const edges: ErGraphEdge[] = model.relationships.map((relationship) => {
-    const id = edgeId('database', tableId(relationship.fromTable), tableId(relationship.toTable));
+    const id = databaseEdgeId(relationship.fromTable, relationship.toTable);
     const label = options.display.showCardinality ? `${relationship.name} ${relationship.fromCardinality}:${relationship.toCardinality}` : relationship.name;
     return {
       data: {
         cardinality: `${relationship.fromCardinality}:${relationship.toCardinality}`,
+        constraintText: relationship.constraintText,
+        diagnosticLevel: options.diagnosticEdgeStates?.[id],
         ...edgeLabelData(id, label, options),
+        relationshipKind: relationship.relationshipKind,
+        roleFrom: relationship.roleFrom,
+        roleTo: relationship.roleTo,
       },
       id,
       label,
-      source: tableId(relationship.fromTable),
-      target: tableId(relationship.toTable),
+      source: tableNodeId(relationship.fromTable),
+      target: tableNodeId(relationship.toTable),
       type: 'editableEr',
     };
   });
@@ -225,10 +271,11 @@ function buildChenGraph(model: SqlErModel, options: ErGraphBuildOptions): { edge
   const edges: ErGraphEdge[] = [];
 
   model.tables.forEach((table, index) => {
-    const id = entityId(table.name);
+    const id = entityNodeId(table.name);
     const node: ErGraphNode = {
       data: {
         display: options.display,
+        diagnosticLevel: options.diagnosticNodeStates?.[id],
         kind: 'entity',
         label: tableLabel(table, options.display.showComments),
         metadata: { table },
@@ -244,10 +291,11 @@ function buildChenGraph(model: SqlErModel, options: ErGraphBuildOptions): { edge
     nodes.push(applyNodeSize(node, options));
 
     visibleColumns(table.columns, options.display.attributeVisibility).forEach((column, columnIndex) => {
-      const attributeId = columnId(table.name, column.name);
+      const attributeId = columnNodeId(table.name, column.name);
       const node: ErGraphNode = {
         data: {
           display: options.display,
+          diagnosticLevel: options.diagnosticNodeStates?.[attributeId],
           kind: 'attribute',
           label: columnLabel(column, options.display.showComments),
           metadata: { column, table },
@@ -262,7 +310,7 @@ function buildChenGraph(model: SqlErModel, options: ErGraphBuildOptions): { edge
       };
       nodes.push(applyNodeSize(node, options));
       edges.push({
-        id: edgeId('attribute', id, attributeId),
+        id: `attribute:${id}->${attributeId}`,
         source: id,
         target: attributeId,
         type: 'straight',
@@ -271,10 +319,11 @@ function buildChenGraph(model: SqlErModel, options: ErGraphBuildOptions): { edge
   });
 
   model.relationships.forEach((relationship, index) => {
-    const id = relationshipId(relationship);
+    const id = relationshipNodeId(relationship);
     const node: ErGraphNode = {
       data: {
         display: options.display,
+        diagnosticLevel: options.diagnosticNodeStates?.[id],
         kind: 'relationship',
         label: options.localLabels[id] ?? relationship.name,
         metadata: { relationship },
@@ -290,33 +339,63 @@ function buildChenGraph(model: SqlErModel, options: ErGraphBuildOptions): { edge
     };
     nodes.push(applyNodeSize(node, options));
 
-    const fromEdgeId = edgeId('relationship-from', entityId(relationship.fromTable), id);
-    const toEdgeId = edgeId('relationship-to', id, entityId(relationship.toTable));
+    const fromEdgeId = chenFromEdgeId(relationship);
+    const toEdgeId = chenToEdgeId(relationship);
     edges.push({
       data: {
         cardinality: relationship.fromCardinality,
+        constraintText: relationship.constraintText,
+        diagnosticLevel: options.diagnosticEdgeStates?.[fromEdgeId],
         ...edgeLabelData(fromEdgeId, options.display.showCardinality ? relationship.fromCardinality : undefined, options),
+        relationshipKind: relationship.relationshipKind,
+        roleFrom: relationship.roleFrom,
+        roleTo: relationship.roleTo,
       },
       id: fromEdgeId,
       label: options.display.showCardinality ? relationship.fromCardinality : undefined,
-      source: entityId(relationship.fromTable),
+      source: entityNodeId(relationship.fromTable),
       target: id,
       type: 'editableEr',
     });
     edges.push({
       data: {
         cardinality: relationship.toCardinality,
+        constraintText: relationship.constraintText,
+        diagnosticLevel: options.diagnosticEdgeStates?.[toEdgeId],
         ...edgeLabelData(toEdgeId, options.display.showCardinality ? relationship.toCardinality : undefined, options),
+        relationshipKind: relationship.relationshipKind,
+        roleFrom: relationship.roleFrom,
+        roleTo: relationship.roleTo,
       },
       id: toEdgeId,
       label: options.display.showCardinality ? relationship.toCardinality : undefined,
       source: id,
-      target: entityId(relationship.toTable),
+      target: entityNodeId(relationship.toTable),
       type: 'editableEr',
     });
   });
 
   return { edges, nodes };
+}
+
+function buildCrowFootGraph(model: SqlErModel, options: ErGraphBuildOptions): { edges: ErGraphEdge[]; nodes: ErGraphNode[] } {
+  const graph = buildDatabaseGraph(model, options);
+  return {
+    edges: graph.edges.map((edge, index) => {
+      const relationship = model.relationships[index];
+      return {
+        ...edge,
+        data: {
+          ...(edge.data ?? { display: options.display }),
+          display: edge.data?.display ?? options.display,
+          label: relationship?.name ?? edge.data?.label,
+        },
+        label: relationship?.name ?? edge.label,
+        type: 'crowFootEr',
+      };
+    }),
+    nodes: graph.nodes,
+  };
 }
 
 export function getNodeSize(node: ErGraphNode): { height: number; width: number } {

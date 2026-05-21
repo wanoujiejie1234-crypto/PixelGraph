@@ -51,6 +51,30 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
+function applyActivityShapes(root: HTMLElement, source: string): void {
+  if (!/:::umlSync\b/u.test(source) && !root.querySelector('g.node.umlSync, g[class~="umlSync"]')) return;
+
+  root.querySelectorAll<SVGGElement>('g.node.umlSync, g[class~="umlSync"]').forEach((node) => {
+    const container = node.querySelector<SVGGraphicsElement>('.label-container');
+    if (!container) return;
+
+    const box = container.getBBox();
+    const width = box.width || node.getBBox().width || 112;
+    const barWidth = Math.max(width, 112);
+    const barHeight = 9;
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('class', container.getAttribute('class') ?? 'label-container');
+    rect.setAttribute('x', String(-barWidth / 2));
+    rect.setAttribute('y', String(-barHeight / 2));
+    rect.setAttribute('width', String(barWidth));
+    rect.setAttribute('height', String(barHeight));
+    rect.setAttribute('rx', '1.5');
+    container.replaceWith(rect);
+
+    node.querySelector('g.label')?.remove();
+  });
+}
+
 function replaceFirstEdgeLabel(source: string, previous: string, next: string): string {
   if (previous === next) return source;
 
@@ -81,6 +105,26 @@ function applyStateLineStyle(root: HTMLElement, source: string, curve: string | 
   });
 }
 
+function applySvgTextFit(root: HTMLElement): void {
+  root.querySelectorAll<SVGTextElement>('svg text').forEach((text) => {
+    const value = text.textContent?.trim() ?? '';
+    if (value.length < 10) return;
+
+    const owner = text.ownerSVGElement;
+    const parent = text.closest<SVGGraphicsElement>('g.node, g.actor, g.edgeLabel');
+    if (!owner || !parent) return;
+
+    const box = parent.getBBox();
+    const maxWidth = Math.max(42, box.width - 12);
+    const currentLength = text.getComputedTextLength();
+    if (currentLength <= maxWidth) return;
+
+    const scale = Math.max(0.62, maxWidth / currentLength);
+    const fontSize = Number.parseFloat(window.getComputedStyle(text).fontSize || '14');
+    if (Number.isFinite(fontSize)) text.style.fontSize = `${Math.max(9, Math.floor(fontSize * scale * 100) / 100)}px`;
+  });
+}
+
 export function MermaidPreview({ onExportSvgReady, svg, source, styleSettings, onSourceChange }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const sourceRef = useRef(source);
@@ -105,6 +149,8 @@ export function MermaidPreview({ onExportSvgReady, svg, source, styleSettings, o
 
     applyHierarchicalSequenceNumbers(root, sourceRef.current, Boolean(styleSettings?.sequenceNumbers));
     applyStateLineStyle(root, sourceRef.current, styleSettings?.curve);
+    applyActivityShapes(root, sourceRef.current);
+    applySvgTextFit(root);
 
     const labels = Array.from(root.querySelectorAll('.edgeLabel p'));
     labels.forEach((label) => {

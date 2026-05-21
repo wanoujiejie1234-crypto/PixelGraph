@@ -2,11 +2,6 @@ import type { DiagramTemplate, DiagramType } from '../diagrams/types';
 
 export const diagramTemplates: DiagramTemplate[] = [
   {
-    id: 'er-sql-commerce',
-    type: 'er',
-    name: '订单数据模型',
-    description: '从 CREATE TABLE、主键、外键和注释生成可编辑的数据库 ER 图。',
-    erInputMode: 'sql',
     code: `CREATE TABLE users (
   id BIGINT PRIMARY KEY COMMENT '用户ID',
   email VARCHAR(120) NOT NULL COMMENT '邮箱',
@@ -38,13 +33,13 @@ CREATE TABLE order_items (
   FOREIGN KEY (order_id) REFERENCES orders(id),
   FOREIGN KEY (product_id) REFERENCES products(id)
 ) COMMENT='订单明细';`,
+    description: '从 CREATE TABLE、主键、外键和注释生成可编辑的数据库 ER 图。',
+    erInputMode: 'sql',
+    id: 'er-sql-commerce',
+    name: '订单数据模型',
+    type: 'er',
   },
   {
-    id: 'er-mermaid-commerce',
-    type: 'er',
-    name: 'Mermaid 订单 ER',
-    description: '兼容 Mermaid ER 语法的客户、订单、商品和明细关系示例。',
-    erInputMode: 'mermaid',
     code: `erDiagram
   CUSTOMER ||--o{ ORDER : places
   ORDER ||--|{ ORDER_ITEM : contains
@@ -71,12 +66,103 @@ CREATE TABLE order_items (
     string product_id FK
     int quantity
   }`,
+    description: 'Mermaid ER 语法示例。',
+    erInputMode: 'mermaid',
+    id: 'er-mermaid-commerce',
+    name: 'Mermaid 订单 ER',
+    type: 'er',
   },
   {
-    id: 'class-rendering-workbench',
-    type: 'class',
-    name: '渲染工作台',
-    description: '描述编辑器、渲染器、预览画布和导出服务之间的职责边界。',
+    code: `@startuml
+title 充值流程活动图
+
+partition 用户 {
+  start
+  :输入手机号码;
+  :选择话费套餐;
+}
+
+partition 充值 APP {
+  :生成、提交订单;
+  :显示支付方式;
+}
+
+partition 管理后台 {
+  :生成订单;
+  if (支付结果?) then (成功)
+    :更新支付状态;
+    fork
+      :发送充值请求;
+    fork again
+      :记录支付流水;
+    end fork
+  else (失败)
+    :展示支付失败;
+  endif
+}
+
+partition 手机运营商 {
+  :接收充值请求;
+  :执行充值;
+  :通知充值结果;
+}
+
+note right of 更新支付状态
+先主干，后分支
+end note
+
+:显示充值结果;
+:获取充值结果;
+stop
+@enduml`,
+    description: 'PlantUML 风格子集活动图模板。',
+    id: 'activity-recharge-flow',
+    name: '充值流程活动图',
+    type: 'activity',
+  },
+  {
+    code: `usecase 订单系统
+
+actors
+  顾客
+  管理员
+  支付平台 [external]
+  VIP顾客
+
+usecases
+  浏览商品
+  提交订单
+  支付订单
+  申请退款
+  审核退款
+  校验用户身份
+  使用优惠券
+  申请发票
+
+associations
+  顾客 -> 浏览商品
+  顾客 -> 提交订单
+  顾客 -> 支付订单
+  顾客 -> 申请退款
+  管理员 -> 审核退款
+  支付平台 -> 支付订单
+
+includes
+  提交订单 -> 校验用户身份
+  支付订单 -> 校验用户身份
+
+extends
+  使用优惠券 -> 提交订单
+  申请发票 -> 提交订单
+
+generalizations
+  VIP顾客 -> 顾客`,
+    description: '电商订单场景的 Use Case DSL 模板。',
+    id: 'usecase-order-system',
+    name: '订单系统用例图',
+    type: 'usecase',
+  },
+  {
     code: `classDiagram
   class WorkspaceState {
     +DiagramType diagramType
@@ -103,12 +189,12 @@ CREATE TABLE order_items (
   WorkspaceState --> DiagramAdapter
   DiagramAdapter --> MermaidRenderer
   MermaidRenderer --> ExportService`,
+    description: '描述编辑器、渲染器、预览和导出服务之间的职责边界。',
+    id: 'class-rendering-workbench',
+    name: '渲染工作台',
+    type: 'class',
   },
   {
-    id: 'class-domain-model',
-    type: 'class',
-    name: '领域模型',
-    description: '描述图表定义、模板、渲染结果和本地草稿之间的结构关系。',
     code: `classDiagram
   class DiagramDefinition {
     +DiagramType id
@@ -135,12 +221,12 @@ CREATE TABLE order_items (
   DiagramDefinition "1" --> "*" DiagramTemplate
   DiagramTemplate --> RenderResult
   LocalDraft --> DiagramDefinition`,
+    description: '描述图表定义、模板和渲染结果之间的关系。',
+    id: 'class-domain-model',
+    name: '领域模型',
+    type: 'class',
   },
   {
-    id: 'sequence-export-pipeline',
-    type: 'sequence',
-    name: '导出流水线',
-    description: '从编辑源码到生成 SVG、PNG 和 Markdown 的完整调用链。',
     code: `sequenceDiagram
   actor User as 用户
   participant Editor as 文本编辑器
@@ -149,18 +235,18 @@ CREATE TABLE order_items (
   participant Exporter as 导出服务
   User->>Editor: 修改图表源码
   Editor->>Renderer: 防抖后提交源码
-  Renderer--)Preview: 异步返回 SVG 或错误信息
+  Renderer--)Preview: 异步返回 SVG 或错误
   User->>Exporter: 选择 SVG / PNG / Markdown
-  Exporter->>Preview: 读取当前可导出图形
-  Exporter--)User: 异步下载文件或显示失败原因`,
+  Exporter->>Preview: 读取当前导出图形
+  Exporter--)User: 下载文件`,
+    description: '从源码编辑到导出的调用链。',
+    id: 'sequence-export-pipeline',
+    name: '导出流水线',
+    type: 'sequence',
   },
   {
-    id: 'sequence-login-review',
-    type: 'sequence',
-    name: '登录认证链路',
-    description: '前端、API、认证服务和数据库之间的登录调用示例。',
     code: `sequenceDiagram
-  actor Visitor as 访问者
+  actor Visitor as 访客
   participant Web as Web 客户端
   participant Api as API 服务
   participant Auth as 认证服务
@@ -173,12 +259,12 @@ CREATE TABLE order_items (
   Auth-->>Api: 签发访问令牌
   Api-->>Web: 返回登录结果
   Web-->>Visitor: 进入工作台`,
+    description: '登录认证链路示例。',
+    id: 'sequence-login-review',
+    name: '登录认证链路',
+    type: 'sequence',
   },
   {
-    id: 'state-document-lifecycle',
-    type: 'state',
-    name: '文档生命周期',
-    description: '技术文档从草稿、评审、发布到归档的状态流转。',
     code: `stateDiagram-v2
   [*] --> Draft
   Draft --> InReview: submit
@@ -188,12 +274,12 @@ CREATE TABLE order_items (
   Published --> Archived: retire
   Archived --> [*]
   Draft --> Archived: discard`,
+    description: '文档生命周期状态图。',
+    id: 'state-document-lifecycle',
+    name: '文档生命周期',
+    type: 'state',
   },
   {
-    id: 'state-payment-flow',
-    type: 'state',
-    name: '支付状态机',
-    description: '订单支付从创建到成功、失败、退款的状态变化。',
     code: `stateDiagram-v2
   [*] --> Created
   Created --> PendingPayment: checkout
@@ -206,12 +292,12 @@ CREATE TABLE order_items (
   Fulfilled --> Completed: received
   Completed --> [*]
   Refunded --> [*]`,
+    description: '支付状态机。',
+    id: 'state-payment-flow',
+    name: '支付状态机',
+    type: 'state',
   },
   {
-    id: 'flowchart-rendering-decision',
-    type: 'flowchart',
-    name: '渲染决策流程',
-    description: '根据图表类型选择 SQL ER 或 Mermaid 渲染路径。',
     code: `flowchart TD
   Start([用户修改源码]) --> Detect{当前图表类型}
   Detect -->|SQL ER| ParseSql[解析 CREATE TABLE]
@@ -226,12 +312,12 @@ CREATE TABLE order_items (
   RenderSvg --> Preview
   SqlError --> EditAgain[返回编辑]
   MermaidError --> EditAgain`,
+    description: '渲染决策流程图。',
+    id: 'flowchart-rendering-decision',
+    name: '渲染决策流程',
+    type: 'flowchart',
   },
   {
-    id: 'flowchart-release-check',
-    type: 'flowchart',
-    name: '发布验收流程',
-    description: '从功能完成到浏览器验收和构建检查的发布前流程。',
     code: `flowchart LR
   Code[完成实现] --> Build[运行构建]
   Build --> BuildOk{构建通过?}
@@ -243,6 +329,129 @@ CREATE TABLE order_items (
   Polish --> Browser
   VisualOk -->|是| ExportCheck[验证导出]
   ExportCheck --> Ready([进入交付])`,
+    description: '发布前验收流程。',
+    id: 'flowchart-release-check',
+    name: '发布验收流程',
+    type: 'flowchart',
+  },
+  {
+    code: `@startuml
+title PixelGraph Rendering Workbench
+
+package "Workspace Shell" as workspace {
+  component "App Shell" as appShell [React]
+  component "Source Editor" as sourceEditor [Code editing]
+  component "Preview Stage" as previewStage [Viewport]
+}
+
+package "Diagram Engines" as engines {
+  component "Mermaid Renderer" as mermaidRenderer [SVG]
+  component "Activity Canvas" as activityCanvas [XYFlow]
+  component "Use Case Canvas" as useCaseCanvas [XYFlow]
+  component "Structure Canvas" as structureCanvas [XYFlow]
+}
+
+package "Core Services" as core {
+  interface "Diagram Adapter" as diagramAdapter
+  component "Export Service" as exportService [SVG / PNG / Markdown]
+  component "Storage Service" as storageService [LocalStorage]
+}
+
+appShell ..> diagramAdapter : resolve type
+sourceEditor ..> diagramAdapter : submit source
+previewStage ..> mermaidRenderer : render Mermaid
+previewStage ..> activityCanvas : render Activity
+previewStage ..> useCaseCanvas : render Use Case
+previewStage ..> structureCanvas : render Component / Deployment / Package
+mermaidRenderer ..> exportService
+activityCanvas ..> exportService
+useCaseCanvas ..> exportService
+structureCanvas ..> exportService
+appShell ..> storageService : persist settings
+
+diagramAdapter --> mermaidRenderer
+diagramAdapter --> activityCanvas
+diagramAdapter --> useCaseCanvas
+diagramAdapter --> structureCanvas
+@enduml`,
+    description: 'PixelGraph component template.',
+    id: 'component-pixelgraph-workbench',
+    name: 'PixelGraph Rendering Workbench',
+    type: 'component',
+  },
+  {
+    code: `@startuml
+title PixelGraph Local Deployment
+
+cloud "User Workstation" as workstation {
+  node "Browser" as browser [React 19]
+  node "Vite Dev Server" as viteServer [localhost:5173]
+}
+
+node "Local Runtime" as runtime {
+  execution "Main UI Thread" as uiThread in runtime [DOM + Canvas]
+  execution "ELK Layout Worker" as elkRuntime in runtime [elkjs]
+}
+
+database "Local Storage" as localStorage [drafts / settings]
+artifact "pixelgraph-app.bundle.js" as appBundle [frontend bundle]
+artifact "diagram-export.svg" as exportSvg [generated]
+
+browser -- viteServer : HTTP / HMR
+browser -- runtime : user interaction
+uiThread -- localStorage : Web Storage API
+uiThread -- elkRuntime : layout jobs
+uiThread -- exportSvg : generate export
+appBundle ..> uiThread : loaded into
+@enduml`,
+    description: 'PixelGraph deployment template.',
+    id: 'deployment-pixelgraph-local',
+    name: 'PixelGraph Local Deployment',
+    type: 'deployment',
+  },
+  {
+    code: `@startuml
+title PixelGraph Layered Modules
+
+package "app" as appPkg {
+  frame "shell" as shellPkg {
+    folder "entry" as entryPkg
+    folder "workspace" as workspacePkg
+  }
+}
+
+package "features" as featuresPkg {
+  package "diagrams" as diagramsPkg
+  package "renderer" as rendererPkg
+  package "editor" as editorPkg
+  package "export" as exportPkg
+  package "storage" as storagePkg
+  package "templates" as templatesPkg
+  package "i18n" as i18nPkg
+}
+
+package "shared" as sharedPkg {
+  folder "types" as typesPkg
+  folder "utils" as utilsPkg
+}
+
+appPkg ..> featuresPkg
+entryPkg ..> diagramsPkg
+workspacePkg ..> rendererPkg
+workspacePkg ..> editorPkg
+workspacePkg ..> exportPkg
+workspacePkg ..> storagePkg
+rendererPkg ..> sharedPkg
+editorPkg ..> sharedPkg
+templatesPkg ..> diagramsPkg
+storagePkg ..> diagramsPkg
+featuresPkg ..> sharedPkg <<import>>
+rendererPkg ..> sharedPkg <<merge>>
+@enduml`,
+    description: 'PixelGraph package template.',
+    id: 'package-pixelgraph-layered',
+    name: 'PixelGraph Layered Modules',
+    type: 'package',
   },
 ];
 

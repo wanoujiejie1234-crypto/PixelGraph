@@ -1,16 +1,30 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ErrorBoundary } from './ErrorBoundary';
 import { getDiagramAdapter } from '../features/diagrams/adapters';
-import { diagramDefinitions, getDiagramDefinition } from '../features/diagrams/definitions';
-import type { DiagramTemplate, DiagramType, ErInputMode, RenderResult } from '../features/diagrams/types';
+import { getDiagramDefinition, diagramDefinitions } from '../features/diagrams/definitions';
+import { diagramTypes, type DiagramTemplate, type DiagramType, type ErInputMode, type RenderResult } from '../features/diagrams/types';
 import { SourceEditor } from '../features/editor/SourceEditor';
 import { copySource, downloadMarkdown, downloadPng, downloadSvg, type ExportFormat } from '../features/export/exporters';
 import { messages, type Messages } from '../features/i18n/messages';
+import { ActivityCanvas, defaultActivityDisplaySettings, formatActivitySource, type ActivityDisplaySettings } from '../features/renderer/ActivityCanvas';
 import { DiagramViewport } from '../features/renderer/DiagramViewport';
+import { DiagramMarkers } from '../features/renderer/DiagramMarkers';
 import { MermaidPreview } from '../features/renderer/MermaidPreview';
+import { SimpleCanvas, darkSimpleDisplaySettings, defaultSimpleDisplaySettings, type SimpleDisplaySettings } from '../features/renderer/SimpleCanvas';
 import { defaultMermaidStyleSettings, getDiagramDirective, renderMermaid, type MermaidCurve, type MermaidStyleSettings } from '../features/renderer/mermaidRenderer';
-import { defaultErDisplaySettings, type ErDisplaySettings, SqlErCanvas } from '../features/renderer/SqlErCanvas';
+import { defaultErDisplaySettings, SqlErCanvas, type ErDisplaySettings } from '../features/renderer/SqlErCanvas';
+import type { DiagramDiagnostic } from '../features/renderer/diagnostics';
 import {
+  StructureCanvas,
+  darkStructureDisplaySettings,
+  defaultStructureDisplaySettings,
+  formatStructureSource,
+  isStructureSourceCompatible,
+  type StructureDisplaySettings,
+} from '../features/renderer/StructureCanvas';
+import { defaultUseCaseDisplaySettings, formatUseCaseSource, UseCaseCanvas, type UseCaseDisplaySettings } from '../features/renderer/UseCaseCanvas';
+import {
+  readStoredActivityDisplaySettings,
   readStoredCanvasSettings,
   readStoredCode,
   readStoredErDisplaySettings,
@@ -20,6 +34,10 @@ import {
   readStoredMermaidStyleSettings,
   readStoredTheme,
   readStoredType,
+  readStoredUseCaseDisplaySettings,
+  readStoredStructureDisplaySettings,
+  readStoredSimpleDisplaySettings,
+  writeStoredActivityDisplaySettings,
   writeStoredCanvasSettings,
   writeStoredCode,
   writeStoredErDisplaySettings,
@@ -29,12 +47,18 @@ import {
   writeStoredMermaidStyleSettings,
   writeStoredTheme,
   writeStoredType,
+  writeStoredUseCaseDisplaySettings,
+  writeStoredStructureDisplaySettings,
+  writeStoredSimpleDisplaySettings,
   type Locale,
   type StoredCanvasSettings,
   type StoredMermaidStyleSettings,
+  type StoredStructureDisplaySettings,
+  type StoredSimpleDisplaySettings,
   type ThemeMode,
 } from '../features/storage/storage';
 import { getTemplateById, getTemplatesByType } from '../features/templates/templates';
+import { AIPanel } from '../features/ai/AIPanel';
 
 const emptyRender: RenderResult = {
   error: null,
@@ -45,13 +69,11 @@ const emptyRender: RenderResult = {
 const lightCanvasSettings: StoredCanvasSettings = {
   editorTextColor: '#18181B',
   exportScale: 3,
-  transparentExport: false,
 };
 
 const darkCanvasSettings: StoredCanvasSettings = {
   editorTextColor: '#F2F4EE',
   exportScale: 3,
-  transparentExport: false,
 };
 
 const lightMermaidStyleSettings = defaultMermaidStyleSettings;
@@ -74,17 +96,54 @@ const darkErDisplaySettings: ErDisplaySettings = {
   textColor: '#F2F4EE',
 };
 
+const lightUseCaseDisplaySettings = defaultUseCaseDisplaySettings;
+
+const darkUseCaseDisplaySettings: UseCaseDisplaySettings = {
+  ...defaultUseCaseDisplaySettings,
+  accentColor: '#9EC6AD',
+  fillColor: '#30362F',
+  lineColor: '#F2F4EE',
+  strokeColor: '#F2F4EE',
+  textColor: '#F2F4EE',
+};
+
+const lightActivityDisplaySettings = defaultActivityDisplaySettings;
+
+const darkActivityDisplaySettings: ActivityDisplaySettings = {
+  ...defaultActivityDisplaySettings,
+  accentColor: '#9EC6AD',
+  fillColor: '#30362F',
+  strokeColor: '#F2F4EE',
+  textColor: '#F2F4EE',
+};
+
+const structureDiagramTypes = ['component', 'deployment', 'package'] as const;
+type StructureDiagramType = (typeof structureDiagramTypes)[number];
+
+function isStructureDiagramType(type: DiagramType): type is StructureDiagramType {
+  return (structureDiagramTypes as readonly string[]).includes(type);
+}
+
 const initialType = readStoredType() ?? 'er';
 const initialDefinition = getDiagramDefinition(initialType);
 const initialTemplate = getTemplateById(initialDefinition.defaultTemplateId);
+const flowLayoutTypes = new Set<DiagramType>(['flowchart']);
+const rankedLayoutTypes = new Set<DiagramType>(['class', 'flowchart', 'state']);
 
 function getInitialErMode(): ErInputMode {
   if (initialType !== 'er') return 'mermaid';
+  const storedCode = readStoredCode();
+  if (/^\s*CREATE\s+TABLE\b/iu.test(storedCode ?? '')) return 'sql';
   return readStoredErInputMode() ?? initialTemplate?.erInputMode ?? 'sql';
 }
 
 function getInitialCode(): string {
-  return readStoredCode() ?? initialTemplate?.code ?? '';
+  const stored = readStoredCode();
+  if (!stored) return initialTemplate?.code ?? '';
+  if (isStructureDiagramType(initialType) && !isStructureSourceCompatible(stored, initialType)) {
+    return initialTemplate?.code ?? '';
+  }
+  return stored;
 }
 
 function getLineCount(source: string): number {
@@ -94,12 +153,8 @@ function getLineCount(source: string): number {
 function getTemplateForType(type: DiagramType, erInputMode: ErInputMode): DiagramTemplate {
   const definition = getDiagramDefinition(type);
   const templates = getTemplatesByType(type);
-  const preferred =
-    type === 'er'
-      ? templates.find((template) => template.erInputMode === erInputMode)
-      : getTemplateById(definition.defaultTemplateId);
+  const preferred = type === 'er' ? templates.find((template) => template.erInputMode === erInputMode) : getTemplateById(definition.defaultTemplateId);
   const template = preferred ?? getTemplateById(definition.defaultTemplateId) ?? templates[0];
-
   if (!template) throw new Error(`Missing template for diagram type: ${type}`);
   return template;
 }
@@ -111,6 +166,7 @@ function formatSource(source: string): string {
     .join('\n')
     .trim();
   const lines = trimmedLines.split('\n');
+
   if (/^(classDiagram|sequenceDiagram|stateDiagram-v2|erDiagram)\b/iu.test(lines[0]?.trim() ?? '')) {
     return lines
       .map((line, index) => {
@@ -145,38 +201,53 @@ function formatSqlSource(source: string): string {
 function getSourcePlaceholder(type: DiagramType, erInputMode: ErInputMode, text: Messages): string {
   if (type === 'er' && erInputMode === 'sql') return text.sqlPlaceholder;
   const placeholders: Record<DiagramType, string> = {
+    activity: text.activityDslPlaceholder,
     class: text.classPlaceholder,
+    component: text.componentDslPlaceholder,
+    deployment: text.deploymentDslPlaceholder,
     er: text.erMermaidPlaceholder,
     flowchart: text.flowchartPlaceholder,
+    package: text.packageDslPlaceholder,
     sequence: text.sequencePlaceholder,
     state: text.statePlaceholder,
+    usecase: text.useCaseDslPlaceholder,
   };
   return placeholders[type];
 }
 
 function getLocalizedDescription(type: DiagramType, text: Messages): string {
   const descriptions: Record<DiagramType, string> = {
+    activity: text.diagramDescriptionActivity,
     class: text.diagramDescriptionClass,
+    component: text.diagramDescriptionComponent,
+    deployment: text.diagramDescriptionDeployment,
     er: text.diagramDescriptionEr,
     flowchart: text.diagramDescriptionFlowchart,
+    package: text.diagramDescriptionPackage,
     sequence: text.diagramDescriptionSequence,
     state: text.diagramDescriptionState,
+    usecase: text.diagramDescriptionUseCase,
   };
   return descriptions[type];
 }
 
 function getLocalizedTemplateName(template: DiagramTemplate, text: Messages): string {
   const names: Record<string, string> = {
+    'activity-recharge-flow': text.templateActivityRecharge,
     'class-domain-model': text.templateClassDomain,
     'class-rendering-workbench': text.templateClassRenderer,
+    'component-pixelgraph-workbench': text.templateComponentOrderPlatform,
+    'deployment-pixelgraph-local': text.templateDeploymentOrderPlatform,
     'er-mermaid-commerce': text.templateErMermaidOrders,
     'er-sql-commerce': text.templateErSqlOrders,
     'flowchart-release-check': text.templateFlowchartReview,
     'flowchart-rendering-decision': text.templateFlowchartGeneration,
+    'package-pixelgraph-layered': text.templatePackageLayeredArchitecture,
     'sequence-export-pipeline': text.templateSequenceExport,
     'sequence-login-review': text.templateSequenceLogin,
     'state-document-lifecycle': text.templateStateDraft,
     'state-payment-flow': text.templateStateOrder,
+    'usecase-order-system': text.templateUseCaseOrderSystem,
   };
   return names[template.id] ?? template.name;
 }
@@ -201,17 +272,43 @@ function getThemeMermaidDefaults(theme: ThemeMode): MermaidStyleSettings {
 
 function getThemeMermaidSettingsByType(theme: ThemeMode): StoredMermaidStyleSettings {
   const defaults = getThemeMermaidDefaults(theme);
-  return {
-    class: defaults,
-    er: defaults,
-    flowchart: defaults,
-    sequence: defaults,
-    state: defaults,
-  };
+  return Object.fromEntries(diagramTypes.map((type) => [type, defaults])) as StoredMermaidStyleSettings;
 }
 
 function getThemeErDefaults(theme: ThemeMode): ErDisplaySettings {
   return theme === 'dark' ? darkErDisplaySettings : lightErDisplaySettings;
+}
+
+function getThemeUseCaseDefaults(theme: ThemeMode): UseCaseDisplaySettings {
+  return theme === 'dark' ? darkUseCaseDisplaySettings : lightUseCaseDisplaySettings;
+}
+
+function getThemeActivityDefaults(theme: ThemeMode): ActivityDisplaySettings {
+  return theme === 'dark' ? darkActivityDisplaySettings : lightActivityDisplaySettings;
+}
+
+function getThemeStructureDefaults(theme: ThemeMode, kind: StructureDiagramType): StructureDisplaySettings {
+  return theme === 'dark' ? darkStructureDisplaySettings(kind) : defaultStructureDisplaySettings(kind);
+}
+
+function getThemeStructureSettingsByType(theme: ThemeMode): StoredStructureDisplaySettings {
+  return {
+    component: getThemeStructureDefaults(theme, 'component'),
+    deployment: getThemeStructureDefaults(theme, 'deployment'),
+    package: getThemeStructureDefaults(theme, 'package'),
+  };
+}
+
+function getThemeSimpleDefaults(theme: ThemeMode): SimpleDisplaySettings {
+  return theme === 'dark' ? darkSimpleDisplaySettings() : defaultSimpleDisplaySettings;
+}
+
+function getThemeSimpleSettingsByType(theme: ThemeMode): StoredSimpleDisplaySettings {
+  return {
+    class: getThemeSimpleDefaults(theme),
+    sequence: getThemeSimpleDefaults(theme),
+    state: getThemeSimpleDefaults(theme),
+  };
 }
 
 function migrateCanvasSettings(settings: StoredCanvasSettings, theme: ThemeMode): StoredCanvasSettings {
@@ -228,13 +325,7 @@ function migrateMermaidSettings(settings: MermaidStyleSettings, theme: ThemeMode
 }
 
 function migrateMermaidSettingsByType(settings: StoredMermaidStyleSettings, theme: ThemeMode): StoredMermaidStyleSettings {
-  return {
-    class: migrateMermaidSettings(settings.class, theme),
-    er: migrateMermaidSettings(settings.er, theme),
-    flowchart: migrateMermaidSettings(settings.flowchart, theme),
-    sequence: migrateMermaidSettings(settings.sequence, theme),
-    state: migrateMermaidSettings(settings.state, theme),
-  };
+  return Object.fromEntries(diagramTypes.map((type) => [type, migrateMermaidSettings(settings[type], theme)])) as StoredMermaidStyleSettings;
 }
 
 function migrateErSettings(settings: ErDisplaySettings, theme: ThemeMode): ErDisplaySettings {
@@ -242,14 +333,74 @@ function migrateErSettings(settings: ErDisplaySettings, theme: ThemeMode): ErDis
   return replaceThemeDefault(settings, previous, getThemeErDefaults(theme), ['accentColor', 'fillColor', 'strokeColor', 'textColor']);
 }
 
+function migrateUseCaseSettings(settings: UseCaseDisplaySettings, theme: ThemeMode): UseCaseDisplaySettings {
+  const previous = theme === 'dark' ? lightUseCaseDisplaySettings : darkUseCaseDisplaySettings;
+  return {
+    ...getThemeUseCaseDefaults(theme),
+    ...replaceThemeDefault(settings, previous, getThemeUseCaseDefaults(theme), ['accentColor', 'fillColor', 'lineColor', 'strokeColor', 'textColor']),
+  };
+}
+
+function migrateActivitySettings(settings: ActivityDisplaySettings, theme: ThemeMode): ActivityDisplaySettings {
+  const previous = theme === 'dark' ? lightActivityDisplaySettings : darkActivityDisplaySettings;
+  return {
+    ...getThemeActivityDefaults(theme),
+    ...replaceThemeDefault(settings, previous, getThemeActivityDefaults(theme), ['accentColor', 'fillColor', 'strokeColor', 'textColor']),
+  };
+}
+
+function migrateStructureSettings(
+  kind: StructureDiagramType,
+  settings: StructureDisplaySettings,
+  theme: ThemeMode,
+): StructureDisplaySettings {
+  const previous = theme === 'dark' ? defaultStructureDisplaySettings(kind) : darkStructureDisplaySettings(kind);
+  const nextDefaults = getThemeStructureDefaults(theme, kind);
+  return {
+    ...nextDefaults,
+    ...replaceThemeDefault(settings, previous, nextDefaults, ['accentColor', 'fillColor', 'lineColor', 'strokeColor', 'textColor']),
+  };
+}
+
+function migrateStructureSettingsByType(settings: StoredStructureDisplaySettings, theme: ThemeMode): StoredStructureDisplaySettings {
+  return {
+    component: migrateStructureSettings('component', settings.component, theme),
+    deployment: migrateStructureSettings('deployment', settings.deployment, theme),
+    package: migrateStructureSettings('package', settings.package, theme),
+  };
+}
+
+function migrateSimpleSettings(settings: SimpleDisplaySettings | undefined, theme: ThemeMode): SimpleDisplaySettings {
+  const defaults = getThemeSimpleDefaults(theme);
+  const previous = theme === 'dark' ? defaultSimpleDisplaySettings : darkSimpleDisplaySettings();
+  return {
+    ...defaults,
+    ...replaceThemeDefault(settings ?? defaults, previous, defaults, ['accentColor', 'fillColor', 'lineColor', 'strokeColor', 'textColor']),
+  };
+}
+
+function migrateSimpleSettingsByType(settings: StoredSimpleDisplaySettings, theme: ThemeMode): StoredSimpleDisplaySettings {
+  return {
+    ...settings,
+    class: migrateSimpleSettings(settings.class, theme),
+    sequence: migrateSimpleSettings(settings.sequence, theme),
+    state: migrateSimpleSettings(settings.state, theme),
+  };
+}
+
 function getSourceActionLabel(type: DiagramType, erInputMode: ErInputMode, text: Messages): string {
   if (type === 'er' && erInputMode === 'sql') return text.inputSqlEr;
   if (type === 'er') return text.inputMermaidEr;
   const labels: Record<Exclude<DiagramType, 'er'>, string> = {
+    activity: text.inputActivityDsl,
     class: text.inputClassDiagram,
+    component: text.inputComponentDsl,
+    deployment: text.inputDeploymentDsl,
     flowchart: text.inputFlowchart,
+    package: text.inputPackageDsl,
     sequence: text.inputSequenceDiagram,
     state: text.inputStateDiagram,
+    usecase: text.inputUseCaseDsl,
   };
   return labels[type];
 }
@@ -267,7 +418,9 @@ export function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exportSvg, setExportSvg] = useState('');
-  const [sqlErError, setSqlErError] = useState<string | null>(null);
+  const [canvasError, setCanvasError] = useState<string | null>(null);
+  const [canvasDiagnostics, setCanvasDiagnostics] = useState<DiagramDiagnostic[]>([]);
+  const [diagramTabsOpen, setDiagramTabsOpen] = useState(false);
   const [canvasSettings, setCanvasSettings] = useState<StoredCanvasSettings>(() => migrateCanvasSettings(readStoredCanvasSettings(getThemeCanvasDefaults(readStoredTheme())), readStoredTheme()));
   const [mermaidStyleSettingsByType, setMermaidStyleSettingsByType] = useState<StoredMermaidStyleSettings>(() =>
     migrateMermaidSettingsByType(readStoredMermaidStyleSettings(getThemeMermaidSettingsByType(readStoredTheme())), readStoredTheme()),
@@ -276,6 +429,18 @@ export function App() {
     ...migrateErSettings(readStoredErDisplaySettings(getThemeErDefaults(readStoredTheme())), readStoredTheme()),
     viewMode: readStoredErViewMode(),
   }));
+  const [useCaseDisplaySettings, setUseCaseDisplaySettings] = useState<UseCaseDisplaySettings>(() =>
+    migrateUseCaseSettings(readStoredUseCaseDisplaySettings(getThemeUseCaseDefaults(readStoredTheme())), readStoredTheme()),
+  );
+  const [activityDisplaySettings, setActivityDisplaySettings] = useState<ActivityDisplaySettings>(() =>
+    migrateActivitySettings(readStoredActivityDisplaySettings(getThemeActivityDefaults(readStoredTheme())), readStoredTheme()),
+  );
+  const [structureDisplaySettingsByType, setStructureDisplaySettingsByType] = useState<StoredStructureDisplaySettings>(() =>
+    migrateStructureSettingsByType(readStoredStructureDisplaySettings(getThemeStructureSettingsByType(readStoredTheme())), readStoredTheme()),
+  );
+  const [simpleDisplaySettingsByType, setSimpleDisplaySettingsByType] = useState<StoredSimpleDisplaySettings>(() =>
+    migrateSimpleSettingsByType(readStoredSimpleDisplaySettings(getThemeSimpleSettingsByType(readStoredTheme())), readStoredTheme()),
+  );
   const [fitRequest, setFitRequest] = useState(0);
   const [resetRequest, setResetRequest] = useState(0);
   const previewShellRef = useRef<HTMLDivElement>(null);
@@ -289,12 +454,17 @@ export function App() {
   );
   const adapter = useMemo(() => getDiagramAdapter(localizedDefinition, isSqlEr, text), [localizedDefinition, isSqlEr, text]);
   const isRendering = adapter.engine === 'mermaid' && renderResult.status === 'rendering';
-  const previewError = adapter.engine === 'sql-er' ? sqlErError : renderResult.error;
+  const previewError = adapter.engine === 'mermaid' ? renderResult.error : canvasError;
   const lineCount = getLineCount(source);
   const sourcePlaceholder = getSourcePlaceholder(diagramType, erInputMode, text);
   const sourceActionLabel = getSourceActionLabel(diagramType, erInputMode, text);
   const mermaidDirective = getDiagramDirective(source);
   const mermaidStyleSettings = mermaidStyleSettingsByType[diagramType];
+  const structureDisplaySettings = isStructureDiagramType(diagramType) ? structureDisplaySettingsByType[diagramType] : null;
+  const simpleDiagramTypes = ['class', 'sequence', 'state'] as const;
+  const isSimpleDiagramType = (type: DiagramType): type is 'class' | 'sequence' | 'state' => (simpleDiagramTypes as readonly string[]).includes(type);
+  const simpleDisplaySettings = isSimpleDiagramType(diagramType) ? simpleDisplaySettingsByType[diagramType] ?? getThemeSimpleDefaults(theme) : null;
+
   const setCurrentMermaidStyleSettings = (updater: (value: MermaidStyleSettings) => MermaidStyleSettings): void => {
     setMermaidStyleSettingsByType((settings) => ({
       ...settings,
@@ -307,10 +477,11 @@ export function App() {
     writeStoredTheme(theme);
     setCanvasSettings((settings) => migrateCanvasSettings(settings, theme));
     setMermaidStyleSettingsByType((settings) => migrateMermaidSettingsByType(settings, theme));
-    setErDisplaySettings((settings) => ({
-      ...migrateErSettings(settings, theme),
-      viewMode: settings.viewMode,
-    }));
+    setErDisplaySettings((settings) => ({ ...migrateErSettings(settings, theme), viewMode: settings.viewMode }));
+    setUseCaseDisplaySettings((settings) => migrateUseCaseSettings(settings, theme));
+    setActivityDisplaySettings((settings) => migrateActivitySettings(settings, theme));
+    setStructureDisplaySettingsByType((settings) => migrateStructureSettingsByType(settings, theme));
+    setSimpleDisplaySettingsByType((settings) => migrateSimpleSettingsByType(settings, theme));
   }, [theme]);
 
   useEffect(() => {
@@ -340,6 +511,22 @@ export function App() {
   }, [erDisplaySettings]);
 
   useEffect(() => {
+    writeStoredUseCaseDisplaySettings(useCaseDisplaySettings);
+  }, [useCaseDisplaySettings]);
+
+  useEffect(() => {
+    writeStoredActivityDisplaySettings(activityDisplaySettings);
+  }, [activityDisplaySettings]);
+
+  useEffect(() => {
+    writeStoredStructureDisplaySettings(structureDisplaySettingsByType);
+  }, [structureDisplaySettingsByType]);
+
+  useEffect(() => {
+    writeStoredSimpleDisplaySettings(simpleDisplaySettingsByType);
+  }, [simpleDisplaySettingsByType]);
+
+  useEffect(() => {
     function handleFullscreenChange(): void {
       setIsFullscreen(document.fullscreenElement === previewShellRef.current);
     }
@@ -365,7 +552,6 @@ export function App() {
         if (!cancelled) setRenderResult(result);
       });
     }, 300);
-
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
@@ -373,10 +559,10 @@ export function App() {
   }, [adapter.engine, mermaidStyleSettings, source]);
 
   function chooseDiagramType(type: DiagramType): void {
-    const nextMode = type === 'er' ? erInputMode : 'mermaid';
-    const nextTemplate = getTemplateForType(type, nextMode);
+    const nextTemplate = getTemplateForType(type, erInputMode);
     setDiagramType(type);
     setSource(nextTemplate.code);
+    setDiagramTabsOpen(false);
     setZoom(1);
     setResetRequest((value) => value + 1);
     setExportNotice(`${getLocalizedTemplateName(nextTemplate, text)} ${text.loaded}`);
@@ -402,6 +588,9 @@ export function App() {
     setCanvasSettings(getThemeCanvasDefaults(theme));
     setMermaidStyleSettingsByType(getThemeMermaidSettingsByType(theme));
     setErDisplaySettings(getThemeErDefaults(theme));
+    setUseCaseDisplaySettings(getThemeUseCaseDefaults(theme));
+    setActivityDisplaySettings(getThemeActivityDefaults(theme));
+    setStructureDisplaySettingsByType(getThemeStructureSettingsByType(theme));
     setZoom(1);
     setResetRequest((value) => value + 1);
     setExportNotice(text.settingsReset);
@@ -424,8 +613,8 @@ export function App() {
         return;
       }
       if (format === 'SVG') downloadSvg(svg);
-      if (format === 'PNG') await downloadPng(svg, { scale: canvasSettings.exportScale, transparent: canvasSettings.transparentExport });
-      if (format === 'Markdown') downloadMarkdown(source, adapter.sourceLanguage);
+      if (format === 'PNG') await downloadPng(svg, { scale: canvasSettings.exportScale, transparent: false });
+      if (format === 'Markdown') downloadMarkdown(source, adapter.exportLanguage);
       setExportNotice(`${format} ${text.exportDone}`);
     } catch (error) {
       setExportNotice(error instanceof Error ? error.message : `${format} export failed.`);
@@ -445,6 +634,34 @@ export function App() {
 
   return (
     <div className="app-shell">
+      <DiagramMarkers
+        fillColor={
+          adapter.engine === 'sql-er'
+            ? erDisplaySettings.fillColor
+            : adapter.engine === 'uml-usecase'
+              ? useCaseDisplaySettings.fillColor
+              : simpleDisplaySettings
+                ? simpleDisplaySettings.fillColor
+              : isStructureDiagramType(diagramType) && structureDisplaySettings
+                ? structureDisplaySettings.fillColor
+                : theme === 'dark'
+                  ? '#30362F'
+                  : '#ffffff'
+        }
+        strokeColor={
+          adapter.engine === 'sql-er'
+            ? erDisplaySettings.strokeColor
+            : adapter.engine === 'uml-usecase'
+              ? useCaseDisplaySettings.lineColor
+              : simpleDisplaySettings
+                ? simpleDisplaySettings.lineColor
+              : isStructureDiagramType(diagramType) && structureDisplaySettings
+                ? structureDisplaySettings.lineColor
+                : theme === 'dark'
+                  ? '#F2F4EE'
+                  : '#171817'
+        }
+      />
       <header className="topbar" aria-label="Application toolbar">
         <div className="brand-block">
           <span className="brand-mark" aria-hidden="true" />
@@ -454,13 +671,25 @@ export function App() {
           </div>
         </div>
 
-        <nav className="diagram-tabs" aria-label={text.diagramKind}>
-          {diagramDefinitions.map((diagram) => (
-            <button className={`tab ${diagram.id === diagramType ? 'is-active' : ''}`} key={diagram.id} onClick={() => chooseDiagramType(diagram.id)} type="button">
-              {diagram.label}
-            </button>
-          ))}
-        </nav>
+        <div className={`diagram-tabs-shell ${diagramTabsOpen ? 'is-open' : ''}`}>
+          <nav className="diagram-tabs" aria-label={text.diagramKind} aria-expanded={diagramTabsOpen}>
+            {diagramDefinitions.map((diagram) => (
+              <button className={`tab ${diagram.id === diagramType ? 'is-active' : ''}`} key={diagram.id} onClick={() => chooseDiagramType(diagram.id)} type="button">
+                {diagram.label}
+              </button>
+            ))}
+          </nav>
+          <button
+            aria-expanded={diagramTabsOpen}
+            aria-label={diagramTabsOpen ? text.collapseDiagramTypes : text.moreDiagramTypes}
+            className="diagram-tabs-toggle"
+            onClick={() => setDiagramTabsOpen((value) => !value)}
+            type="button"
+          >
+            <span>{diagramTabsOpen ? text.collapseDiagramTypes : text.moreDiagramTypes}</span>
+            <span aria-hidden="true">{diagramTabsOpen ? '−' : '+'}</span>
+          </button>
+        </div>
 
         <div className="topbar-actions">
           <button className="secondary-button" onClick={() => setLocale((value) => (value === 'zh' ? 'en' : 'zh'))} type="button">
@@ -489,6 +718,7 @@ export function App() {
               {text.resetSettings}
             </button>
           </div>
+
           <section>
             <h3>{text.canvasSettings}</h3>
             <label>
@@ -501,11 +731,9 @@ export function App() {
               <input type="range" min="1" max="4" step="1" value={canvasSettings.exportScale} onChange={(event) => setCanvasSettings((value) => ({ ...value, exportScale: Number(event.target.value) }))} />
               <span>{canvasSettings.exportScale}x</span>
             </label>
-            <label className="inline-check">
-              <input type="checkbox" checked={canvasSettings.transparentExport} onChange={(event) => setCanvasSettings((value) => ({ ...value, transparentExport: event.target.checked }))} />
-              {text.transparentExport}
-            </label>
+            <p className="settings-hint">{text.exportScaleHint}</p>
           </section>
+
           {adapter.engine === 'sql-er' ? (
             <section>
               <h3>{text.erSettings}</h3>
@@ -574,17 +802,584 @@ export function App() {
                 {text.showCardinality}
               </label>
             </section>
+          ) : adapter.engine === 'uml-activity' ? (
+            <section>
+              <h3>{text.diagramSettings}</h3>
+              <label>
+                {text.nodeScale}
+                <input type="range" min="0.75" max="1.4" step="0.05" value={activityDisplaySettings.nodeScale} onChange={(event) => setActivityDisplaySettings((value) => ({ ...value, nodeScale: Number(event.target.value) }))} />
+                <span>{Math.round(activityDisplaySettings.nodeScale * 100)}%</span>
+              </label>
+              <label>
+                {text.fontSize}
+                <input type="range" min="11" max="24" step="1" value={activityDisplaySettings.fontSize} onChange={(event) => setActivityDisplaySettings((value) => ({ ...value, fontSize: Number(event.target.value) }))} />
+                <span>{activityDisplaySettings.fontSize}px</span>
+              </label>
+              <label>
+                {text.rankSpacing}
+                <input type="range" min="56" max="180" step="4" value={activityDisplaySettings.rankGap} onChange={(event) => setActivityDisplaySettings((value) => ({ ...value, rankGap: Number(event.target.value) }))} />
+                <span>{activityDisplaySettings.rankGap}px</span>
+              </label>
+              <label>
+                {text.layoutSpacing}
+                <input type="range" min="16" max="64" step="4" value={activityDisplaySettings.laneGap} onChange={(event) => setActivityDisplaySettings((value) => ({ ...value, laneGap: Number(event.target.value) }))} />
+                <span>{activityDisplaySettings.laneGap}px</span>
+              </label>
+              <label>
+                {text.accentColor}
+                <input type="color" value={activityDisplaySettings.accentColor} onChange={(event) => setActivityDisplaySettings((value) => ({ ...value, accentColor: event.target.value }))} />
+                <span>{activityDisplaySettings.accentColor}</span>
+              </label>
+              <label>
+                {text.fillColor}
+                <input type="color" value={activityDisplaySettings.fillColor} onChange={(event) => setActivityDisplaySettings((value) => ({ ...value, fillColor: event.target.value }))} />
+                <span>{activityDisplaySettings.fillColor}</span>
+              </label>
+              <label>
+                {text.strokeColor}
+                <input type="color" value={activityDisplaySettings.strokeColor} onChange={(event) => setActivityDisplaySettings((value) => ({ ...value, strokeColor: event.target.value }))} />
+                <span>{activityDisplaySettings.strokeColor}</span>
+              </label>
+              <label>
+                {text.textColor}
+                <input type="color" value={activityDisplaySettings.textColor} onChange={(event) => setActivityDisplaySettings((value) => ({ ...value, textColor: event.target.value }))} />
+                <span>{activityDisplaySettings.textColor}</span>
+              </label>
+              <label className="inline-check">
+                <input type="checkbox" checked={activityDisplaySettings.showNotes} onChange={(event) => setActivityDisplaySettings((value) => ({ ...value, showNotes: event.target.checked }))} />
+                {text.showComments}
+              </label>
+            </section>
+          ) : adapter.engine === 'uml-usecase' ? (
+            <section>
+              <h3>{text.diagramSettings}</h3>
+              <label>
+                {text.layoutDirection}
+                <select value={useCaseDisplaySettings.layoutDirection} onChange={(event) => setUseCaseDisplaySettings((value) => ({ ...value, layoutDirection: event.target.value === 'TB' ? 'TB' : 'LR' }))}>
+                  <option value="LR">LR</option>
+                  <option value="TB">TB</option>
+                </select>
+              </label>
+              <label>
+                {text.nodeScale}
+                <input type="range" min="0.75" max="1.4" step="0.05" value={useCaseDisplaySettings.nodeScale} onChange={(event) => setUseCaseDisplaySettings((value) => ({ ...value, nodeScale: Number(event.target.value) }))} />
+                <span>{Math.round(useCaseDisplaySettings.nodeScale * 100)}%</span>
+              </label>
+              <label>
+                {text.fontSize}
+                <input type="range" min="11" max="24" step="1" value={useCaseDisplaySettings.fontSize} onChange={(event) => setUseCaseDisplaySettings((value) => ({ ...value, fontSize: Number(event.target.value) }))} />
+                <span>{useCaseDisplaySettings.fontSize}px</span>
+              </label>
+              <label>
+                {text.actorMargin}
+                <input type="range" min="56" max="160" step="4" value={useCaseDisplaySettings.actorSpacing} onChange={(event) => setUseCaseDisplaySettings((value) => ({ ...value, actorSpacing: Number(event.target.value) }))} />
+                <span>{useCaseDisplaySettings.actorSpacing}px</span>
+              </label>
+              <label>
+                {text.rankSpacing}
+                <input type="range" min="56" max="180" step="4" value={useCaseDisplaySettings.useCaseSpacing} onChange={(event) => setUseCaseDisplaySettings((value) => ({ ...value, useCaseSpacing: Number(event.target.value) }))} />
+                <span>{useCaseDisplaySettings.useCaseSpacing}px</span>
+              </label>
+              <label>
+                {text.accentColor}
+                <input type="color" value={useCaseDisplaySettings.accentColor} onChange={(event) => setUseCaseDisplaySettings((value) => ({ ...value, accentColor: event.target.value }))} />
+                <span>{useCaseDisplaySettings.accentColor}</span>
+              </label>
+              <label>
+                {text.fillColor}
+                <input type="color" value={useCaseDisplaySettings.fillColor} onChange={(event) => setUseCaseDisplaySettings((value) => ({ ...value, fillColor: event.target.value }))} />
+                <span>{useCaseDisplaySettings.fillColor}</span>
+              </label>
+              <label>
+                {text.strokeColor}
+                <input type="color" value={useCaseDisplaySettings.strokeColor} onChange={(event) => setUseCaseDisplaySettings((value) => ({ ...value, strokeColor: event.target.value }))} />
+                <span>{useCaseDisplaySettings.strokeColor}</span>
+              </label>
+              <label>
+                {text.lineColor}
+                <input type="color" value={useCaseDisplaySettings.lineColor} onChange={(event) => setUseCaseDisplaySettings((value) => ({ ...value, lineColor: event.target.value }))} />
+                <span>{useCaseDisplaySettings.lineColor}</span>
+              </label>
+              <label>
+                {text.lineWidth}
+                <input type="range" min="1" max="3.2" step="0.1" value={useCaseDisplaySettings.lineWidth} onChange={(event) => setUseCaseDisplaySettings((value) => ({ ...value, lineWidth: Number(event.target.value) }))} />
+                <span>{useCaseDisplaySettings.lineWidth.toFixed(1)}px</span>
+              </label>
+              <label>
+                {text.curveStyle}
+                <select value={useCaseDisplaySettings.lineStyle} onChange={(event) => setUseCaseDisplaySettings((value) => ({ ...value, lineStyle: event.target.value === 'straight' || event.target.value === 'bezier' ? event.target.value : 'smooth' }))}>
+                  <option value="smooth">{text.curveStep}</option>
+                  <option value="bezier">{text.curveBasis}</option>
+                  <option value="straight">{text.curveLinear}</option>
+                </select>
+              </label>
+              <label>
+                {text.associationArrow}
+                <select value={useCaseDisplaySettings.associationArrow} onChange={(event) => setUseCaseDisplaySettings((value) => ({ ...value, associationArrow: event.target.value === 'open' ? 'open' : 'none' }))}>
+                  <option value="none">{text.associationArrowNone}</option>
+                  <option value="open">{text.associationArrowOpen}</option>
+                </select>
+              </label>
+              <label>
+                {text.textColor}
+                <input type="color" value={useCaseDisplaySettings.textColor} onChange={(event) => setUseCaseDisplaySettings((value) => ({ ...value, textColor: event.target.value }))} />
+                <span>{useCaseDisplaySettings.textColor}</span>
+              </label>
+              <label className="inline-check">
+                <input type="checkbox" checked={useCaseDisplaySettings.showSystemBoundary} onChange={(event) => setUseCaseDisplaySettings((value) => ({ ...value, showSystemBoundary: event.target.checked }))} />
+                {text.showSystemBoundary}
+              </label>
+              <label className="inline-check">
+                <input type="checkbox" checked={useCaseDisplaySettings.showRelationLabels} onChange={(event) => setUseCaseDisplaySettings((value) => ({ ...value, showRelationLabels: event.target.checked }))} />
+                {text.showRelationLabels}
+              </label>
+            </section>
+          ) : adapter.engine === 'uml-component' || adapter.engine === 'uml-deployment' || adapter.engine === 'uml-package' ? (
+            <section>
+              <h3>{text.diagramSettings}</h3>
+              {structureDisplaySettings ? (
+                <>
+                  <label>
+                    {text.layoutDirection}
+                    <select
+                      value={structureDisplaySettings.layoutDirection}
+                      onChange={(event) =>
+                        isStructureDiagramType(diagramType)
+                          ? setStructureDisplaySettingsByType((value) => ({
+                              ...value,
+                              [diagramType]: { ...value[diagramType], layoutDirection: event.target.value === 'TB' ? 'TB' : 'LR' },
+                            }))
+                          : undefined
+                      }
+                    >
+                      <option value="LR">LR</option>
+                      <option value="TB">TB</option>
+                    </select>
+                  </label>
+                  <label>
+                    {text.nodeScale}
+                    <input
+                      type="range"
+                      min="0.75"
+                      max="1.4"
+                      step="0.05"
+                      value={structureDisplaySettings.nodeScale}
+                      onChange={(event) =>
+                        isStructureDiagramType(diagramType)
+                          ? setStructureDisplaySettingsByType((value) => ({
+                              ...value,
+                              [diagramType]: { ...value[diagramType], nodeScale: Number(event.target.value) },
+                            }))
+                          : undefined
+                      }
+                    />
+                    <span>{Math.round(structureDisplaySettings.nodeScale * 100)}%</span>
+                  </label>
+                  <label>
+                    {text.fontSize}
+                    <input
+                      type="range"
+                      min="11"
+                      max="24"
+                      step="1"
+                      value={structureDisplaySettings.fontSize}
+                      onChange={(event) =>
+                        isStructureDiagramType(diagramType)
+                          ? setStructureDisplaySettingsByType((value) => ({
+                              ...value,
+                              [diagramType]: { ...value[diagramType], fontSize: Number(event.target.value) },
+                            }))
+                          : undefined
+                      }
+                    />
+                    <span>{structureDisplaySettings.fontSize}px</span>
+                  </label>
+                  <label>
+                    {text.rankSpacing}
+                    <input
+                      type="range"
+                      min="72"
+                      max="180"
+                      step="4"
+                      value={structureDisplaySettings.rankGap}
+                      onChange={(event) =>
+                        isStructureDiagramType(diagramType)
+                          ? setStructureDisplaySettingsByType((value) => ({
+                              ...value,
+                              [diagramType]: { ...value[diagramType], rankGap: Number(event.target.value) },
+                            }))
+                          : undefined
+                      }
+                    />
+                    <span>{structureDisplaySettings.rankGap}px</span>
+                  </label>
+                  <label>
+                    {text.accentColor}
+                    <input
+                      type="color"
+                      value={structureDisplaySettings.accentColor}
+                      onChange={(event) =>
+                        isStructureDiagramType(diagramType)
+                          ? setStructureDisplaySettingsByType((value) => ({
+                              ...value,
+                              [diagramType]: { ...value[diagramType], accentColor: event.target.value },
+                            }))
+                          : undefined
+                      }
+                    />
+                    <span>{structureDisplaySettings.accentColor}</span>
+                  </label>
+                  <label>
+                    {text.fillColor}
+                    <input
+                      type="color"
+                      value={structureDisplaySettings.fillColor}
+                      onChange={(event) =>
+                        isStructureDiagramType(diagramType)
+                          ? setStructureDisplaySettingsByType((value) => ({
+                              ...value,
+                              [diagramType]: { ...value[diagramType], fillColor: event.target.value },
+                            }))
+                          : undefined
+                      }
+                    />
+                    <span>{structureDisplaySettings.fillColor}</span>
+                  </label>
+                  <label>
+                    {text.strokeColor}
+                    <input
+                      type="color"
+                      value={structureDisplaySettings.strokeColor}
+                      onChange={(event) =>
+                        isStructureDiagramType(diagramType)
+                          ? setStructureDisplaySettingsByType((value) => ({
+                              ...value,
+                              [diagramType]: { ...value[diagramType], strokeColor: event.target.value },
+                            }))
+                          : undefined
+                      }
+                    />
+                    <span>{structureDisplaySettings.strokeColor}</span>
+                  </label>
+                  <label>
+                    {text.lineColor}
+                    <input
+                      type="color"
+                      value={structureDisplaySettings.lineColor}
+                      onChange={(event) =>
+                        isStructureDiagramType(diagramType)
+                          ? setStructureDisplaySettingsByType((value) => ({
+                              ...value,
+                              [diagramType]: { ...value[diagramType], lineColor: event.target.value },
+                            }))
+                          : undefined
+                      }
+                    />
+                    <span>{structureDisplaySettings.lineColor}</span>
+                  </label>
+                  <label>
+                    {text.lineWidth}
+                    <input
+                      type="range"
+                      min="1"
+                      max="3.2"
+                      step="0.1"
+                      value={structureDisplaySettings.lineWidth}
+                      onChange={(event) =>
+                        isStructureDiagramType(diagramType)
+                          ? setStructureDisplaySettingsByType((value) => ({
+                              ...value,
+                              [diagramType]: { ...value[diagramType], lineWidth: Number(event.target.value) },
+                            }))
+                          : undefined
+                      }
+                    />
+                    <span>{structureDisplaySettings.lineWidth.toFixed(1)}px</span>
+                  </label>
+                  <label>
+                    {text.textColor}
+                    <input
+                      type="color"
+                      value={structureDisplaySettings.textColor}
+                      onChange={(event) =>
+                        isStructureDiagramType(diagramType)
+                          ? setStructureDisplaySettingsByType((value) => ({
+                              ...value,
+                              [diagramType]: { ...value[diagramType], textColor: event.target.value },
+                            }))
+                          : undefined
+                      }
+                    />
+                    <span>{structureDisplaySettings.textColor}</span>
+                  </label>
+                  <label className="inline-check">
+                    <input
+                      type="checkbox"
+                      checked={structureDisplaySettings.showMetadata}
+                      onChange={(event) =>
+                        isStructureDiagramType(diagramType)
+                          ? setStructureDisplaySettingsByType((value) => ({
+                              ...value,
+                              [diagramType]: { ...value[diagramType], showMetadata: event.target.checked },
+                            }))
+                          : undefined
+                      }
+                    />
+                    {text.showMetadata}
+                  </label>
+                  <label className="inline-check">
+                    <input
+                      type="checkbox"
+                      checked={structureDisplaySettings.showRelationLabels}
+                      onChange={(event) =>
+                        isStructureDiagramType(diagramType)
+                          ? setStructureDisplaySettingsByType((value) => ({
+                              ...value,
+                              [diagramType]: { ...value[diagramType], showRelationLabels: event.target.checked },
+                            }))
+                          : undefined
+                      }
+                    />
+                    {text.showRelationLabels}
+                  </label>
+                  {diagramType !== 'package' ? (
+                    <label className="inline-check">
+                      <input
+                        type="checkbox"
+                        checked={structureDisplaySettings.showGroupFrames}
+                        onChange={(event) =>
+                          isStructureDiagramType(diagramType)
+                            ? setStructureDisplaySettingsByType((value) => ({
+                                ...value,
+                                [diagramType]: { ...value[diagramType], showGroupFrames: event.target.checked },
+                              }))
+                            : undefined
+                        }
+                      />
+                      {text.showGroupFrames}
+                    </label>
+                  ) : null}
+                  {diagramType === 'component' ? (
+                    <label className="inline-check">
+                      <input
+                        type="checkbox"
+                        checked={structureDisplaySettings.showInterfaces}
+                        onChange={(event) =>
+                          setStructureDisplaySettingsByType((value) => ({
+                            ...value,
+                            component: { ...value.component, showInterfaces: event.target.checked },
+                          }))
+                        }
+                      />
+                      {text.showInterfaces}
+                    </label>
+                  ) : null}
+                  {diagramType === 'deployment' ? (
+                    <>
+                      <label className="inline-check">
+                        <input
+                          type="checkbox"
+                          checked={structureDisplaySettings.showArtifacts}
+                          onChange={(event) =>
+                            setStructureDisplaySettingsByType((value) => ({
+                              ...value,
+                              deployment: { ...value.deployment, showArtifacts: event.target.checked },
+                            }))
+                          }
+                        />
+                        {text.showArtifacts}
+                      </label>
+                      <label className="inline-check">
+                        <input
+                          type="checkbox"
+                          checked={structureDisplaySettings.showProtocolLabels}
+                          onChange={(event) =>
+                            setStructureDisplaySettingsByType((value) => ({
+                              ...value,
+                              deployment: { ...value.deployment, showProtocolLabels: event.target.checked },
+                            }))
+                          }
+                        />
+                        {text.showProtocolLabels}
+                      </label>
+                    </>
+                  ) : null}
+                  {diagramType === 'package' ? (
+                    <label className="inline-check">
+                      <input
+                        type="checkbox"
+                        checked={structureDisplaySettings.showContainerHeaders}
+                        onChange={(event) =>
+                          setStructureDisplaySettingsByType((value) => ({
+                            ...value,
+                            package: { ...value.package, showContainerHeaders: event.target.checked },
+                          }))
+                        }
+                      />
+                      {text.showPackageHeaders}
+                    </label>
+                  ) : null}
+                </>
+              ) : null}
+            </section>
+          ) : adapter.engine === 'uml-class' || adapter.engine === 'uml-sequence' || adapter.engine === 'uml-state' ? (
+            simpleDisplaySettings ? (
+              <section>
+                <h3>{text.diagramSettings}</h3>
+                <label>
+                  {text.layoutDirection}
+                  <select
+                    value={simpleDisplaySettings.layoutDirection}
+                    onChange={(event) =>
+                      isSimpleDiagramType(diagramType)
+                        ? setSimpleDisplaySettingsByType((value) => ({
+                            ...value,
+                            [diagramType]: { ...(value[diagramType] ?? getThemeSimpleDefaults(theme)), layoutDirection: event.target.value === 'LR' ? 'LR' : 'TB' },
+                          }))
+                        : undefined
+                    }
+                  >
+                    <option value="TB">TB</option>
+                    <option value="LR">LR</option>
+                  </select>
+                </label>
+                <label>
+                  {text.nodeScale}
+                  <input
+                    type="range"
+                    min="0.75"
+                    max="1.4"
+                    step="0.05"
+                    value={simpleDisplaySettings.nodeScale}
+                    onChange={(event) =>
+                      isSimpleDiagramType(diagramType)
+                        ? setSimpleDisplaySettingsByType((value) => ({
+                            ...value,
+                            [diagramType]: { ...(value[diagramType] ?? getThemeSimpleDefaults(theme)), nodeScale: Number(event.target.value) },
+                          }))
+                        : undefined
+                    }
+                  />
+                  <span>{Math.round(simpleDisplaySettings.nodeScale * 100)}%</span>
+                </label>
+                <label>
+                  {text.fontSize}
+                  <input
+                    type="range"
+                    min="11"
+                    max="24"
+                    step="1"
+                    value={simpleDisplaySettings.fontSize}
+                    onChange={(event) =>
+                      isSimpleDiagramType(diagramType)
+                        ? setSimpleDisplaySettingsByType((value) => ({
+                            ...value,
+                            [diagramType]: { ...(value[diagramType] ?? getThemeSimpleDefaults(theme)), fontSize: Number(event.target.value) },
+                          }))
+                        : undefined
+                    }
+                  />
+                  <span>{simpleDisplaySettings.fontSize}px</span>
+                </label>
+                <label>
+                  {text.rankSpacing}
+                  <input
+                    type="range"
+                    min="56"
+                    max="180"
+                    step="4"
+                    value={simpleDisplaySettings.rankGap}
+                    onChange={(event) =>
+                      isSimpleDiagramType(diagramType)
+                        ? setSimpleDisplaySettingsByType((value) => ({
+                            ...value,
+                            [diagramType]: { ...(value[diagramType] ?? getThemeSimpleDefaults(theme)), rankGap: Number(event.target.value) },
+                          }))
+                        : undefined
+                    }
+                  />
+                  <span>{simpleDisplaySettings.rankGap}px</span>
+                </label>
+                {diagramType === 'state' ? (
+                  <label>
+                    {text.curveStyle}
+                    <select
+                      value={simpleDisplaySettings.lineStyle}
+                      onChange={(event) =>
+                        isSimpleDiagramType(diagramType)
+                          ? setSimpleDisplaySettingsByType((value) => ({
+                              ...value,
+                              [diagramType]: { ...(value[diagramType] ?? getThemeSimpleDefaults(theme)), lineStyle: event.target.value as 'orthogonal' | 'smooth' | 'straight' },
+                            }))
+                          : undefined
+                      }
+                    >
+                      <option value="smooth">{text.curveBasis}</option>
+                      <option value="straight">{text.curveLinear}</option>
+                      <option value="orthogonal">{text.curveStep}</option>
+                    </select>
+                  </label>
+                ) : null}
+                <label>
+                  {text.fillColor}
+                  <input
+                    type="color"
+                    value={simpleDisplaySettings.fillColor}
+                    onChange={(event) =>
+                      isSimpleDiagramType(diagramType)
+                        ? setSimpleDisplaySettingsByType((value) => ({
+                            ...value,
+                            [diagramType]: { ...(value[diagramType] ?? getThemeSimpleDefaults(theme)), fillColor: event.target.value },
+                          }))
+                        : undefined
+                    }
+                  />
+                  <span>{simpleDisplaySettings.fillColor}</span>
+                </label>
+                <label>
+                  {text.lineColor}
+                  <input
+                    type="color"
+                    value={simpleDisplaySettings.lineColor}
+                    onChange={(event) =>
+                      isSimpleDiagramType(diagramType)
+                        ? setSimpleDisplaySettingsByType((value) => ({
+                            ...value,
+                            [diagramType]: { ...(value[diagramType] ?? getThemeSimpleDefaults(theme)), lineColor: event.target.value, strokeColor: event.target.value },
+                          }))
+                        : undefined
+                    }
+                  />
+                  <span>{simpleDisplaySettings.lineColor}</span>
+                </label>
+                <label className="inline-check">
+                  <input
+                    type="checkbox"
+                    checked={simpleDisplaySettings.showDetails}
+                    onChange={(event) =>
+                      isSimpleDiagramType(diagramType)
+                        ? setSimpleDisplaySettingsByType((value) => ({
+                            ...value,
+                            [diagramType]: { ...(value[diagramType] ?? getThemeSimpleDefaults(theme)), showDetails: event.target.checked },
+                          }))
+                        : undefined
+                    }
+                  />
+                  {text.showMetadata}
+                </label>
+              </section>
+            ) : null
           ) : (
             <section>
               <h3>{text.diagramSettings}</h3>
-              {(diagramType === 'flowchart' || diagramType === 'class' || diagramType === 'state') ? (
+              {rankedLayoutTypes.has(diagramType) ? (
                 <label>
                   {text.rankSpacing}
                   <input type="range" min="32" max="120" step="4" value={mermaidStyleSettings.rankSpacing} onChange={(event) => setCurrentMermaidStyleSettings((value) => ({ ...value, rankSpacing: Number(event.target.value) }))} />
                   <span>{mermaidStyleSettings.rankSpacing}px</span>
                 </label>
               ) : null}
-              {diagramType === 'flowchart' || diagramType === 'state' ? (
+              {diagramType === 'state' || flowLayoutTypes.has(diagramType) ? (
                 <label>
                   {text.curveStyle}
                   <select value={mermaidStyleSettings.curve} onChange={(event) => setCurrentMermaidStyleSettings((value) => ({ ...value, curve: event.target.value as MermaidCurve }))}>
@@ -642,6 +1437,14 @@ export function App() {
       ) : null}
 
       <main className="workspace">
+        <AIPanel
+          diagramType={diagramType}
+          erInputMode={erInputMode}
+          source={source}
+          setSource={setSource}
+          setDiagramType={chooseDiagramType}
+          setErInputMode={chooseErInputMode}
+        />
         <section className="editor-panel" aria-labelledby="editorTitle">
           <div className="panel-header">
             <div>
@@ -676,7 +1479,15 @@ export function App() {
             formatLabel={text.formatSource}
             lineCountLabel={`${lineCount} ${text.lineCount}`}
             onChange={setSource}
-            onFormat={() => setSource((value) => (isSqlEr ? formatSqlSource(value) : formatSource(value)))}
+            onFormat={() =>
+              setSource((value) => {
+                if (isSqlEr) return formatSqlSource(value);
+                if (diagramType === 'activity') return formatActivitySource(value, text.activityTitle);
+                if (diagramType === 'usecase') return formatUseCaseSource(value);
+                if (isStructureDiagramType(diagramType)) return formatStructureSource(value);
+                return formatSource(value);
+              })
+            }
             placeholder={sourcePlaceholder}
             source={source}
             textColor={canvasSettings.editorTextColor}
@@ -686,6 +1497,12 @@ export function App() {
           <div className="editor-footer">
             <span>{saveState}</span>
           </div>
+          {canvasDiagnostics.length > 0 ? (
+            <div className="error-panel">
+              <strong>{text.error}</strong>
+              <p>{canvasDiagnostics.map((item) => `${item.level === 'warning' ? 'Warning' : 'Error'}: ${item.message}`).join('\n')}</p>
+            </div>
+          ) : null}
         </section>
 
         <section className="preview-panel" aria-labelledby="previewTitle">
@@ -724,31 +1541,107 @@ export function App() {
             </div>
             <div className={`diagram-stage ${isRendering ? 'is-updating' : ''}`} aria-live="polite">
               {adapter.engine === 'sql-er' ? (
+                <SqlErCanvas
+                  displaySettings={erDisplaySettings}
+                  onDiagnosticsChange={setCanvasDiagnostics}
+                  fitRequest={fitRequest}
+                  onDisplaySettingsChange={setErDisplaySettings}
+                  onErrorChange={setCanvasError}
+                  onExportSvgReady={setExportSvg}
+                  onSourceChange={setSource}
+                  resetRequest={resetRequest}
+                  source={source}
+                  text={text}
+                  themeMode={theme}
+                />
+              ) : adapter.engine === 'uml-activity' ? (
                 <ErrorBoundary
-                  resetKey={`${diagramType}:${erInputMode}:${source}`}
+                  resetKey={`${diagramType}:${source}`}
                   fallback={(error) => (
-                    <div className="er-flow-shell">
+                    <div className="er-flow-shell activity-flow-shell">
                       <div className="er-error-state">
-                        <strong>ER 预览遇到运行时错误</strong>
-                        <p>图表没有丢失。请继续修改左侧 SQL，预览区会在下一次输入后自动恢复。</p>
+                        <strong>{text.activityInvalidTitle}</strong>
+                        <p>{text.activityInvalidBody}</p>
                         <pre>{error.message}</pre>
                       </div>
                     </div>
                   )}
                 >
-                  <SqlErCanvas
-                    displaySettings={erDisplaySettings}
+                  <ActivityCanvas
+                    defaultLaneLabel={text.activityTitle}
+                    displaySettings={activityDisplaySettings}
                     fitRequest={fitRequest}
+                    onDiagnosticsChange={setCanvasDiagnostics}
+                    onDisplaySettingsChange={setActivityDisplaySettings}
+                    onErrorChange={setCanvasError}
+                    onExportSvgReady={setExportSvg}
+                    onSourceChange={setSource}
                     resetRequest={resetRequest}
                     source={source}
                     text={text}
-                    transparentExport={canvasSettings.transparentExport}
-                    onDisplaySettingsChange={setErDisplaySettings}
-                    onErrorChange={setSqlErError}
-                    onExportSvgReady={setExportSvg}
-                    onSourceChange={setSource}
+                    themeMode={theme}
                   />
                 </ErrorBoundary>
+              ) : adapter.engine === 'uml-usecase' ? (
+                <UseCaseCanvas
+                  displaySettings={useCaseDisplaySettings}
+                  fitRequest={fitRequest}
+                  onDiagnosticsChange={setCanvasDiagnostics}
+                  onDisplaySettingsChange={setUseCaseDisplaySettings}
+                  onErrorChange={setCanvasError}
+                  onExportSvgReady={setExportSvg}
+                  onSourceChange={setSource}
+                  resetRequest={resetRequest}
+                  source={source}
+                  text={text}
+                  themeMode={theme}
+                />
+              ) : adapter.engine === 'uml-component' || adapter.engine === 'uml-deployment' || adapter.engine === 'uml-package' ? (
+                structureDisplaySettings ? (
+                  <StructureCanvas
+                    diagramKind={diagramType as 'component' | 'deployment' | 'package'}
+                    displaySettings={structureDisplaySettings}
+                    fitRequest={fitRequest}
+                    onDiagnosticsChange={setCanvasDiagnostics}
+                    onDisplaySettingsChange={(settings) =>
+                      isStructureDiagramType(diagramType)
+                        ? setStructureDisplaySettingsByType((value) => ({
+                            ...value,
+                            [diagramType]: settings,
+                          }))
+                        : undefined
+                    }
+                    onErrorChange={setCanvasError}
+                    onExportSvgReady={setExportSvg}
+                    onSourceChange={setSource}
+                    resetRequest={resetRequest}
+                    source={source}
+                    text={text}
+                    themeMode={theme}
+                  />
+                ) : null
+              ) : adapter.engine === 'uml-class' || adapter.engine === 'uml-sequence' || adapter.engine === 'uml-state' ? (
+                simpleDisplaySettings && isSimpleDiagramType(diagramType) ? (
+                  <SimpleCanvas
+                    diagramKind={diagramType}
+                    displaySettings={simpleDisplaySettings}
+                    fitRequest={fitRequest}
+                    onDiagnosticsChange={setCanvasDiagnostics}
+                    onDisplaySettingsChange={(settings) =>
+                      setSimpleDisplaySettingsByType((value) => ({
+                        ...value,
+                        [diagramType]: settings,
+                      }))
+                    }
+                    onErrorChange={setCanvasError}
+                    onExportSvgReady={setExportSvg}
+                    onSourceChange={setSource}
+                    resetRequest={resetRequest}
+                    source={source}
+                    text={text}
+                    themeMode={theme}
+                  />
+                ) : null
               ) : renderResult.status === 'error' ? (
                 <div className="error-panel">
                   <strong>{text.mermaidFailed}</strong>
@@ -777,7 +1670,7 @@ export function App() {
           </div>
 
           <div className="export-row" aria-label="Export actions">
-            <button className="secondary-button" onClick={handleCopySource} type="button">
+            <button className="secondary-button" onClick={() => void handleCopySource()} type="button">
               {text.copy}
             </button>
             <button className="secondary-button" onClick={() => void handleExport('SVG')} type="button">

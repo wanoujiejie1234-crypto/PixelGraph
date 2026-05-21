@@ -2,34 +2,64 @@ import type { DiagramDefinition } from './types';
 
 export const diagramDefinitions: DiagramDefinition[] = [
   {
+    defaultTemplateId: 'er-sql-commerce',
+    description: 'Entity relationship diagram',
     id: 'er',
     label: 'ER',
-    description: '实体关系图',
-    defaultTemplateId: 'er-sql-commerce',
   },
   {
+    defaultTemplateId: 'activity-recharge-flow',
+    description: 'Activity diagram',
+    id: 'activity',
+    label: 'Activity',
+  },
+  {
+    defaultTemplateId: 'usecase-order-system',
+    description: 'Use case diagram',
+    id: 'usecase',
+    label: 'Use Case',
+  },
+  {
+    defaultTemplateId: 'component-pixelgraph-workbench',
+    description: 'Component diagram',
+    id: 'component',
+    label: 'Component',
+  },
+  {
+    defaultTemplateId: 'deployment-pixelgraph-local',
+    description: 'Deployment diagram',
+    id: 'deployment',
+    label: 'Deployment',
+  },
+  {
+    defaultTemplateId: 'package-pixelgraph-layered',
+    description: 'Package diagram',
+    id: 'package',
+    label: 'Package',
+  },
+  {
+    defaultTemplateId: 'class-rendering-workbench',
+    description: 'Class diagram',
     id: 'class',
     label: 'Class',
-    description: '类图',
-    defaultTemplateId: 'class-rendering-workbench',
   },
   {
+    defaultTemplateId: 'sequence-export-pipeline',
+    description: 'Sequence diagram',
     id: 'sequence',
     label: 'Sequence',
-    description: '时序图',
-    defaultTemplateId: 'sequence-export-pipeline',
   },
   {
+    defaultTemplateId: 'state-document-lifecycle',
+    description: 'State diagram',
     id: 'state',
     label: 'State',
-    description: '状态图',
-    defaultTemplateId: 'state-document-lifecycle',
   },
   {
+    defaultTemplateId: 'flowchart-rendering-decision',
+    description: 'Flowchart',
     id: 'flowchart',
     label: 'Flow',
-    description: '流程图',
-    defaultTemplateId: 'flowchart-rendering-decision',
   },
 ];
 

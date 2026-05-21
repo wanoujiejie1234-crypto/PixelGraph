@@ -1,4 +1,9 @@
+import { columnNodeId, relationshipTargetId, tableNodeId } from './erIds';
+
 export interface SqlColumn {
+  attributeKind?: 'normal' | 'derived' | 'multivalued';
+  isWeakKey?: boolean;
+  keyKind?: 'primary' | 'foreign' | 'alternate' | 'unique';
   name: string;
   dataType: string;
   comment: string;
@@ -15,6 +20,7 @@ export interface SqlTable {
   name: string;
   comment: string;
   columns: SqlColumn[];
+  entityKind?: 'strong' | 'weak' | 'associative';
 }
 
 export interface SqlRelationship {
@@ -24,7 +30,12 @@ export interface SqlRelationship {
   toTable: string;
   toColumn: string;
   name: string;
+  constraintText?: string;
   fromCardinality: string;
+  notation?: 'database' | 'chen' | 'crowfoot';
+  relationshipKind?: 'identifying' | 'nonIdentifying';
+  roleFrom?: string;
+  roleTo?: string;
   toCardinality: string;
 }
 
@@ -36,8 +47,15 @@ export interface SqlErModel {
 export type SqlErDiagnosticLevel = 'error' | 'warning';
 
 export interface SqlErDiagnostic {
+  code: string;
   level: SqlErDiagnosticLevel;
   message: string;
+  sourceRange?: {
+    column?: number;
+    line?: number;
+  };
+  targetId?: string;
+  targetKind?: string;
 }
 
 export interface SqlErValidationResult {
@@ -57,6 +75,14 @@ const reservedWords = new Set([
   'fulltext',
   'spatial',
 ]);
+
+function tableTargetId(tableName: string): string {
+  return tableNodeId(tableName);
+}
+
+function columnTargetId(tableName: string, columnName: string): string {
+  return columnNodeId(tableName, columnName);
+}
 
 function cleanIdentifier(value: string): string {
   return value.replace(/[`"'[\]]/g, '').trim();
@@ -153,7 +179,7 @@ function validateDefinitions(table: SqlTable, definitions: string[]): SqlErDiagn
   table.columns.forEach((column) => {
     const key = column.name.toLowerCase();
     if (columnNames.has(key)) {
-      diagnostics.push({ level: 'error', message: `表 ${table.name} 中字段 ${column.name} 重复。` });
+      diagnostics.push({ code: 'duplicate-column', level: 'error', message: `表 ${table.name} 中字段 ${column.name} 重复。` });
     }
     columnNames.add(key);
   });
@@ -164,12 +190,12 @@ function validateDefinitions(table: SqlTable, definitions: string[]): SqlErDiagn
     const column = parseColumnDefinition(trimmed);
     const isKnownConstraint = /\b(primary|foreign|unique|index|key|constraint|check)\b/iu.test(trimmed);
     if (!column && !isKnownConstraint) {
-      diagnostics.push({ level: 'warning', message: `表 ${table.name} 中有一行未识别：${trimmed.slice(0, 80)}` });
+      diagnostics.push({ code: 'unrecognized-definition', level: 'warning', message: `表 ${table.name} 中有一行未识别：${trimmed.slice(0, 80)}` });
     }
   });
 
   if (table.columns.length === 0) {
-    diagnostics.push({ level: 'error', message: `表 ${table.name} 没有可识别字段，请检查字段定义。` });
+    diagnostics.push({ code: 'table-no-columns', level: 'error', message: `表 ${table.name} 没有可识别字段，请检查字段定义。` });
   }
 
   return diagnostics;
@@ -178,17 +204,19 @@ function validateDefinitions(table: SqlTable, definitions: string[]): SqlErDiagn
 export function validateSqlErSource(sql: string): SqlErValidationResult {
   const source = sql.trim();
   const diagnostics: SqlErDiagnostic[] = [];
+  const { annotations, diagnostics: annotationDiagnostics } = parsePgAnnotations(sql);
+  diagnostics.push(...annotationDiagnostics);
 
   if (!source) {
     return {
-      diagnostics: [{ level: 'error', message: '请输入 CREATE TABLE 建表语句后再生成 ER 图。' }],
+      diagnostics: [{ code: 'empty-source', level: 'error', message: '请输入 CREATE TABLE 建表语句后再生成 ER 图。' }],
       hasFatalError: true,
     };
   }
 
   if (isLikelyMermaid(source)) {
     return {
-      diagnostics: [{ level: 'error', message: '当前是 SQL 生成 ER 模式，但输入看起来是 Mermaid。请切换到 Mermaid ER，或粘贴 CREATE TABLE 语句。' }],
+      diagnostics: [{ code: 'unexpected-mermaid', level: 'error', message: '当前是 SQL 生成 ER 模式，但输入看起来是 Mermaid。请切换到 Mermaid ER，或粘贴 CREATE TABLE 语句。' }],
       hasFatalError: true,
     };
   }
@@ -196,7 +224,7 @@ export function validateSqlErSource(sql: string): SqlErValidationResult {
   const statements = findCreateTableStatements(source);
   if (statements.length === 0) {
     return {
-      diagnostics: [{ level: 'error', message: '未找到 CREATE TABLE 语句。标准输入应类似：CREATE TABLE users (id BIGINT PRIMARY KEY);' }],
+      diagnostics: [{ code: 'missing-create-table', level: 'error', message: '未找到 CREATE TABLE 语句。标准输入应类似：CREATE TABLE users (id BIGINT PRIMARY KEY);' }],
       hasFatalError: true,
     };
   }
@@ -216,7 +244,7 @@ export function validateSqlErSource(sql: string): SqlErValidationResult {
     applyTableConstraints(table, definitions);
 
     if (!statement.complete) {
-      diagnostics.push({ level: 'error', message: `表 ${statement.name} 的 CREATE TABLE 缺少右括号 ")"。` });
+      diagnostics.push({ code: 'create-table-missing-paren', level: 'error', message: `表 ${statement.name} 的 CREATE TABLE 缺少右括号 ")"。` });
     }
     diagnostics.push(...validateDefinitions(table, definitions));
     return table;
@@ -225,7 +253,7 @@ export function validateSqlErSource(sql: string): SqlErValidationResult {
   const tableNames = new Set<string>();
   parsedTables.forEach((table) => {
     const key = table.name.toLowerCase();
-    if (tableNames.has(key)) diagnostics.push({ level: 'error', message: `表名 ${table.name} 重复。` });
+    if (tableNames.has(key)) diagnostics.push({ code: 'duplicate-table', level: 'error', message: `表名 ${table.name} 重复。` });
     tableNames.add(key);
   });
 
@@ -235,15 +263,26 @@ export function validateSqlErSource(sql: string): SqlErValidationResult {
       if (!column.references) return;
       const targetTable = tableByName.get(column.references.table.toLowerCase());
       if (!targetTable) {
-        diagnostics.push({ level: 'error', message: `字段 ${table.name}.${column.name} 引用了不存在的表 ${column.references.table}。` });
+        diagnostics.push({ code: 'missing-reference-table', level: 'error', message: `字段 ${table.name}.${column.name} 引用了不存在的表 ${column.references.table}。` });
         return;
       }
       const targetColumn = targetTable.columns.find((item) => item.name.toLowerCase() === column.references?.column.toLowerCase());
       if (!targetColumn) {
-        diagnostics.push({ level: 'error', message: `字段 ${table.name}.${column.name} 引用了不存在的字段 ${column.references.table}.${column.references.column}。` });
+        diagnostics.push({ code: 'missing-reference-column', level: 'error', message: `字段 ${table.name}.${column.name} 引用了不存在的字段 ${column.references.table}.${column.references.column}。` });
       }
     });
   });
+
+  const model = applyPgAnnotations(
+    {
+      relationships: inferRelationships(parsedTables),
+      tables: parsedTables,
+    },
+    annotations,
+  );
+
+  diagnostics.push(...validatePgAnnotations(model, annotations));
+  diagnostics.push(...validateErSemantics(model));
 
   return {
     diagnostics,
@@ -254,6 +293,105 @@ export function validateSqlErSource(sql: string): SqlErValidationResult {
 function parseTableComment(suffix: string): string {
   const commentMatch = suffix.match(/\bcomment\s*=\s*'([^']*)'/iu) ?? suffix.match(/\bcomment\s*=\s*"([^"]*)"/iu);
   return commentMatch ? commentMatch[1] : '';
+}
+
+interface PgAnnotationTable {
+  columns: Record<string, Partial<SqlColumn>>;
+  entityKind?: SqlTable['entityKind'];
+}
+
+interface PgRelationshipAnnotation {
+  constraintText?: string;
+  fromTable: string;
+  relationshipKind?: SqlRelationship['relationshipKind'];
+  roleFrom?: string;
+  roleTo?: string;
+  toTable: string;
+}
+
+interface PgAnnotations {
+  relationships: PgRelationshipAnnotation[];
+  tables: Record<string, PgAnnotationTable>;
+}
+
+function emptyPgAnnotations(): PgAnnotations {
+  return {
+    relationships: [],
+    tables: {},
+  };
+}
+
+function getOrCreateTableAnnotation(annotations: PgAnnotations, tableName: string): PgAnnotationTable {
+  const key = tableName.toLowerCase();
+  const existing = annotations.tables[key];
+  if (existing) return existing;
+  const created: PgAnnotationTable = { columns: {} };
+  annotations.tables[key] = created;
+  return created;
+}
+
+function parsePgAnnotations(sql: string): { annotations: PgAnnotations; diagnostics: SqlErDiagnostic[] } {
+  const annotations = emptyPgAnnotations();
+  const diagnostics: SqlErDiagnostic[] = [];
+  const lines = sql.replace(/\r\n/gu, '\n').split('\n');
+
+  lines.forEach((line, index) => {
+    const match = line.match(/--\s*@pg\s+(.*)$/iu);
+    if (!match) return;
+    const payload = match[1].trim();
+    const location = { column: match.index != null ? match.index + 1 : 1, line: index + 1 };
+
+    const tableMatch = payload.match(/^table\s+([A-Za-z_][\w-]*)\s+(weak|associative|strong)$/iu);
+    if (tableMatch) {
+      getOrCreateTableAnnotation(annotations, tableMatch[1]).entityKind = tableMatch[2].toLowerCase() as SqlTable['entityKind'];
+      return;
+    }
+
+    const columnMatch = payload.match(/^column\s+([A-Za-z_][\w-]*)\.([A-Za-z_][\w-]*)\s+(alternate|unique|derived|multivalued|weak-key)$/iu);
+    if (columnMatch) {
+      const table = getOrCreateTableAnnotation(annotations, columnMatch[1]);
+      const columnKey = columnMatch[2].toLowerCase();
+      const current = table.columns[columnKey] ?? {};
+      const qualifier = columnMatch[3].toLowerCase();
+      if (qualifier === 'alternate') current.keyKind = 'alternate';
+      if (qualifier === 'unique') current.keyKind = 'unique';
+      if (qualifier === 'derived') current.attributeKind = 'derived';
+      if (qualifier === 'multivalued') current.attributeKind = 'multivalued';
+      if (qualifier === 'weak-key') current.isWeakKey = true;
+      table.columns[columnKey] = current;
+      return;
+    }
+
+    const relationshipMatch = payload.match(
+      /^relationship\s+([A-Za-z_][\w-]*)\s*->\s*([A-Za-z_][\w-]*)(?:\s+(identifying|nonidentifying|non-identifying))?(?:\s+role-from\s+([A-Za-z_][\w-]*))?(?:\s+role-to\s+([A-Za-z_][\w-]*))?(?:\s+constraint\s+"([^"]+)")?$/iu,
+    );
+    if (relationshipMatch) {
+      annotations.relationships.push({
+        constraintText: relationshipMatch[6],
+        fromTable: relationshipMatch[1],
+        relationshipKind:
+          relationshipMatch[3] == null
+            ? undefined
+            : relationshipMatch[3].toLowerCase().startsWith('ident')
+              ? 'identifying'
+              : 'nonIdentifying',
+        roleFrom: relationshipMatch[4],
+        roleTo: relationshipMatch[5],
+        toTable: relationshipMatch[2],
+      });
+      return;
+    }
+
+    diagnostics.push({
+      code: 'pg-annotation-invalid',
+      level: 'warning',
+      message: `Unrecognized @pg annotation: ${payload}`,
+      sourceRange: location,
+      targetKind: 'annotation',
+    });
+  });
+
+  return { annotations, diagnostics };
 }
 
 function parseColumnComment(definition: string): string {
@@ -377,6 +515,7 @@ function inferRelationships(tables: SqlTable[]): SqlRelationship[] {
       column.isForeignKey = true;
       column.references = { table: targetTable, column: targetColumn };
       relationships.push({
+        constraintText: undefined,
         id: key,
         fromTable: targetTable,
         fromColumn: targetColumn,
@@ -384,6 +523,10 @@ function inferRelationships(tables: SqlTable[]): SqlRelationship[] {
         toColumn: column.name,
         name: makeRelationshipName(table, column, target),
         fromCardinality: '1',
+        notation: 'database',
+        relationshipKind: 'nonIdentifying',
+        roleFrom: undefined,
+        roleTo: undefined,
         toCardinality: 'N',
       });
     });
@@ -392,11 +535,196 @@ function inferRelationships(tables: SqlTable[]): SqlRelationship[] {
   return relationships;
 }
 
+function applyPgAnnotations(model: SqlErModel, annotations: PgAnnotations): SqlErModel {
+  return {
+    relationships: model.relationships.map((relationship) => {
+      const annotation = annotations.relationships.find(
+        (item) => item.fromTable.toLowerCase() === relationship.fromTable.toLowerCase() && item.toTable.toLowerCase() === relationship.toTable.toLowerCase(),
+      );
+      if (!annotation) return relationship;
+      return {
+        ...relationship,
+        constraintText: annotation.constraintText,
+        relationshipKind: annotation.relationshipKind ?? relationship.relationshipKind,
+        roleFrom: annotation.roleFrom,
+        roleTo: annotation.roleTo,
+      };
+    }),
+    tables: model.tables.map((table) => {
+      const tableAnnotation = annotations.tables[table.name.toLowerCase()];
+      if (!tableAnnotation) return table;
+      return {
+        ...table,
+        columns: table.columns.map((column) => {
+          const columnAnnotation = tableAnnotation.columns[column.name.toLowerCase()];
+          if (!columnAnnotation) return column;
+          return {
+            ...column,
+            attributeKind: columnAnnotation.attributeKind ?? column.attributeKind,
+            isWeakKey: columnAnnotation.isWeakKey ?? column.isWeakKey,
+            keyKind: columnAnnotation.keyKind ?? column.keyKind ?? (column.isPrimaryKey ? 'primary' : column.isForeignKey ? 'foreign' : undefined),
+          };
+        }),
+        entityKind: tableAnnotation.entityKind ?? table.entityKind,
+      };
+    }),
+  };
+}
+
+function validatePgAnnotations(model: SqlErModel, annotations: PgAnnotations): SqlErDiagnostic[] {
+  const diagnostics: SqlErDiagnostic[] = [];
+  const tables = new Map(model.tables.map((table) => [table.name.toLowerCase(), table]));
+
+  Object.entries(annotations.tables).forEach(([tableKey, tableAnnotation]) => {
+    const table = tables.get(tableKey);
+    if (!table) {
+      diagnostics.push({
+        code: 'pg-table-unknown',
+        level: 'error',
+        message: `Annotation references unknown table: ${tableKey}`,
+        targetId: tableTargetId(tableKey),
+        targetKind: 'table',
+      });
+      return;
+    }
+
+    Object.keys(tableAnnotation.columns).forEach((columnKey) => {
+      const column = table.columns.find((item) => item.name.toLowerCase() === columnKey);
+      if (!column) {
+        diagnostics.push({
+          code:
+            tableAnnotation.columns[columnKey]?.attributeKind === 'derived' || tableAnnotation.columns[columnKey]?.attributeKind === 'multivalued'
+              ? 'annotation-attribute-target-missing'
+              : 'pg-column-unknown',
+          level: 'error',
+          message: `Annotation references unknown column: ${table.name}.${columnKey}`,
+          targetId: columnTargetId(table.name, columnKey),
+          targetKind: 'column',
+        });
+      }
+    });
+  });
+
+  annotations.relationships.forEach((annotation) => {
+    const match = model.relationships.find(
+      (relationship) =>
+        relationship.fromTable.toLowerCase() === annotation.fromTable.toLowerCase() &&
+        relationship.toTable.toLowerCase() === annotation.toTable.toLowerCase(),
+    );
+    if (!match) {
+      diagnostics.push({
+        code: 'annotation-relationship-target-missing',
+        level: 'error',
+        message: `Annotation references unknown relationship: ${annotation.fromTable} -> ${annotation.toTable}`,
+        targetId: relationshipTargetId(annotation.fromTable, annotation.toTable),
+        targetKind: 'relationship',
+      });
+    }
+  });
+
+  return diagnostics;
+}
+
+function validateErSemantics(model: SqlErModel): SqlErDiagnostic[] {
+  const diagnostics: SqlErDiagnostic[] = [];
+  const tables = new Map(model.tables.map((table) => [table.name.toLowerCase(), table]));
+
+  model.tables.forEach((table) => {
+    if (table.entityKind === 'weak') {
+      const hasIdentifying = model.relationships.some(
+        (relationship) => relationship.toTable.toLowerCase() === table.name.toLowerCase() && relationship.relationshipKind === 'identifying',
+      );
+      if (!hasIdentifying) {
+        diagnostics.push({
+          code: 'weak-entity-missing-identifying',
+          level: 'warning',
+          message: `Weak entity ${table.name} has no identifying relationship.`,
+          targetId: tableTargetId(table.name),
+          targetKind: 'table',
+        });
+      }
+    }
+
+    if (table.entityKind === 'associative') {
+      const foreignKeyCount = table.columns.filter((column) => column.isForeignKey || column.references).length;
+      if (foreignKeyCount < 2) {
+        diagnostics.push({
+          code: 'associative-entity-insufficient-foreign-keys',
+          level: 'warning',
+          message: `Associative entity ${table.name} should usually have at least two foreign keys.`,
+          targetId: tableTargetId(table.name),
+          targetKind: 'table',
+        });
+      }
+    }
+
+    table.columns.forEach((column) => {
+      if ((column.attributeKind === 'derived' || column.attributeKind === 'multivalued') && model.relationships.length >= 0) {
+        diagnostics.push({
+          code: 'attribute-kind-database-warning',
+          level: 'warning',
+          message: `${table.name}.${column.name} uses ${column.attributeKind} semantics that are primarily visible in Chen view.`,
+          targetId: columnTargetId(table.name, column.name),
+          targetKind: 'column',
+        });
+      }
+      if (column.keyKind === 'alternate' && column.isPrimaryKey) {
+        diagnostics.push({
+          code: 'alternate-key-conflict',
+          level: 'warning',
+          message: `${table.name}.${column.name} is marked as both primary and alternate key.`,
+          targetId: columnTargetId(table.name, column.name),
+          targetKind: 'column',
+        });
+      }
+    });
+  });
+
+  model.relationships.forEach((relationship) => {
+    const targetId = relationshipTargetId(relationship.fromTable, relationship.toTable);
+    const targetTable = tables.get(relationship.toTable.toLowerCase());
+    const roleCount = Number(Boolean(relationship.roleFrom)) + Number(Boolean(relationship.roleTo));
+
+    if (relationship.relationshipKind === 'identifying' && targetTable?.entityKind !== 'weak') {
+      diagnostics.push({
+        code: 'identifying-relationship-target-not-weak',
+        level: 'warning',
+        message: `Identifying relationship ${relationship.fromTable} -> ${relationship.toTable} should target a weak entity.`,
+        targetId,
+        targetKind: 'relationship',
+      });
+    }
+
+    if (roleCount === 1) {
+      diagnostics.push({
+        code: 'relationship-role-missing-side',
+        level: 'warning',
+        message: `Relationship ${relationship.fromTable} -> ${relationship.toTable} should define both roleFrom and roleTo together.`,
+        targetId,
+        targetKind: 'relationship',
+      });
+    }
+
+    if (relationship.constraintText && !relationship.name.trim()) {
+      diagnostics.push({
+        code: 'relationship-constraint-without-name',
+        level: 'warning',
+        message: `Relationship ${relationship.fromTable} -> ${relationship.toTable} has constraint text but no relationship name.`,
+        targetId,
+        targetKind: 'relationship',
+      });
+    }
+  });
+
+  return diagnostics;
+}
+
 function escapeSql(value: string): string {
   return value.replace(/'/g, "''");
 }
 
 export function parseSqlErModel(sql: string): SqlErModel {
+  const { annotations } = parsePgAnnotations(sql);
   const tables = findCreateTableStatements(sql).filter((statement) => statement.complete).map((statement) => {
     const table: SqlTable = {
       name: statement.name,
@@ -414,10 +742,13 @@ export function parseSqlErModel(sql: string): SqlErModel {
     return table;
   });
 
-  return {
-    tables,
-    relationships: inferRelationships(tables),
-  };
+  return applyPgAnnotations(
+    {
+      tables,
+      relationships: inferRelationships(tables),
+    },
+    annotations,
+  );
 }
 
 export function modelToSql(model: SqlErModel): string {
