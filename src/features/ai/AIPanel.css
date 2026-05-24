@@ -23,6 +23,21 @@
   align-self: flex-start;
 }
 
+/* 水平对话框模式：从标题栏下方弹出 */
+.ai-dialog-wrapper .ai-panel {
+  width: 100%;
+  min-width: 0;
+  max-height: 320px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.15);
+}
+
+.ai-dialog-wrapper .ai-messages {
+  max-height: 200px;
+  min-height: 80px;
+}
+
 .ai-header {
   display: flex;
   align-items: center;
@@ -293,4 +308,15 @@
 
 .ai-msg-text {
   white-space: pre-wrap;
+}
+
+/* 流式消息闪烁光标 */
+.ai-message.is-streaming .ai-msg-text::after {
+  content: '▍';
+  animation: blink-cursor 0.8s step-end infinite;
+  margin-left: 2px;
+}
+
+@keyframes blink-cursor {
+  50% { opacity: 0; }
 }

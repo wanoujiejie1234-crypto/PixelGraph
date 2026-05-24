@@ -78,16 +78,17 @@ function messagesToLlmFormat(messages: ChatMessage[]) {
   return result;
 }
 
-async function callLlm(
+async function callLlmStream(
   messages: unknown[],
   tools: unknown[],
   config: AiProviderConfig,
-  signal?: AbortSignal,
+  signal: AbortSignal,
+  onToken: (token: string) => void,
 ): Promise<LlmResponse> {
   const body: Record<string, unknown> = {
     model: config.model,
     messages,
-    stream: false,
+    stream: true,
   };
   if (tools.length) body.tools = tools;
 
@@ -106,32 +107,90 @@ async function callLlm(
     throw new Error(`LLM API error (${response.status}): ${errorText}`);
   }
 
-  const data = (await response.json()) as {
-    choices: Array<{
-      message: {
-        content: string | null;
-        tool_calls?: Array<{
-          id: string;
-          type: string;
-          function: { name: string; arguments: string };
-        }>;
-      };
-    }>;
-  };
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const result: LlmResponse = { content: '' };
+  const toolCallsByIndex: Record<number, { id?: string; name?: string; args: string }> = {};
 
-  const choice = data.choices[0];
-  if (!choice) throw new Error('LLM returned empty response');
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
 
-  return {
-    content: choice.message.content ?? '',
-    toolCalls: choice.message.tool_calls
-      ?.filter((tc) => tc.type === 'function')
-      .map((tc) => ({
-        id: tc.id,
-        name: tc.function.name,
-        args: JSON.parse(tc.function.arguments) as Record<string, unknown>,
-      })),
-  };
+    const parts = buffer.split('\n');
+    buffer = parts.pop() ?? '';
+
+    for (const part of parts) {
+      const trimmed = part.trim();
+      if (!trimmed.startsWith('data: ')) continue;
+      const data = trimmed.slice(6);
+      if (data === '[DONE]') continue;
+
+      try {
+        const parsed = JSON.parse(data) as {
+          choices?: Array<{
+            delta: { content?: string | null; tool_calls?: Array<Record<string, unknown>> };
+            finish_reason?: string | null;
+          }>;
+        };
+        const delta = parsed.choices?.[0]?.delta;
+        if (!delta) continue;
+
+        if (delta.content) {
+          result.content += delta.content;
+          onToken(delta.content);
+        }
+
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index as number;
+            if (!toolCallsByIndex[idx]) toolCallsByIndex[idx] = { args: '' };
+            if (tc.id) toolCallsByIndex[idx].id = tc.id as string;
+            if ((tc.function as Record<string, unknown> | undefined)?.name) {
+              toolCallsByIndex[idx].name = (tc.function as Record<string, unknown>).name as string;
+            }
+            if ((tc.function as Record<string, unknown> | undefined)?.arguments) {
+              toolCallsByIndex[idx].args += (tc.function as Record<string, unknown>).arguments as string;
+            }
+          }
+        }
+      } catch {
+        // 跳过无法解析的行
+      }
+    }
+  }
+
+  // 处理缓冲区中可能残留的数据
+  if (buffer.trim()) {
+    const trimmed = buffer.trim();
+    if (trimmed.startsWith('data: ')) {
+      const data = trimmed.slice(6);
+      if (data !== '[DONE]') {
+        try {
+          const parsed = JSON.parse(data) as Record<string, unknown>;
+          const delta = (parsed.choices as Array<Record<string, unknown>> | undefined)?.[0]?.delta as Record<string, unknown> | undefined;
+          if (delta?.content) {
+            result.content += delta.content as string;
+            onToken(delta.content as string);
+          }
+        } catch {
+          // 忽略
+        }
+      }
+    }
+  }
+
+  const toolCallEntries = Object.values(toolCallsByIndex).filter((tc) => tc.id && tc.name);
+  if (toolCallEntries.length > 0) {
+    result.toolCalls = toolCallEntries.map((tc) => ({
+      id: tc.id!,
+      name: tc.name!,
+      args: JSON.parse(tc.args || '{}') as Record<string, unknown>,
+    }));
+  }
+
+  return result;
 }
 
 export class DiagramAgent {
@@ -207,10 +266,24 @@ export class DiagramAgent {
     try {
       const llmTools = buildToolsForLlm(this.tools);
       const llmMessages = messagesToLlmFormat(trimHistory(this.messages));
-      const response = await callLlm(llmMessages, llmTools, this.config, signal);
+
+      // 第一次 LLM 调用：流式输出
+      const response = await callLlmStream(
+        llmMessages,
+        llmTools,
+        this.config,
+        signal,
+        (token) => this.context.onStreamingContent?.(token, false),
+      );
 
       if (response.toolCalls?.length) {
+        // 如果有流式内容，先结束流
+        if (response.content) {
+          this.context.onStreamingContent?.('', true);
+        }
+
         const toolResults: ChatMessage['toolCalls'] = [];
+        let hasWriteSourceSuccess = false;
 
         for (const call of response.toolCalls) {
           const tool = this.tools[call.name];
@@ -233,12 +306,16 @@ export class DiagramAgent {
           }
           this.context.onStatusChange('writing');
           try {
+            const result = await tool.execute(call.args);
             toolResults.push({
               id: call.id,
               name: call.name,
               args: call.args,
-              result: await tool.execute(call.args),
+              result,
             });
+            if (call.name === 'writeSource' && !result.startsWith('语法错误')) {
+              hasWriteSourceSuccess = true;
+            }
           } catch (err) {
             toolResults.push({
               id: call.id,
@@ -257,28 +334,48 @@ export class DiagramAgent {
           toolCalls: toolResults,
         });
 
+        // 跟进总结：流式输出
         this.context.onStatusChange('thinking');
-        const followUp = await callLlm(messagesToLlmFormat(trimHistory(this.messages)), [], this.config, signal);
+        const followUp = await callLlmStream(
+          messagesToLlmFormat(trimHistory(this.messages)),
+          [],
+          this.config,
+          signal,
+          (token) => this.context.onStreamingContent?.(token, false),
+        );
         const finalContent = followUp.content || '已完成所有操作。';
+
+        // 结束流，替换为永久消息
+        this.context.onStreamingContent?.('', true);
+
         this.messages.push({
           id: this.nextId(),
           role: 'assistant',
           content: finalContent,
           timestamp: Date.now(),
         });
-        this.context.onMessage(finalContent);
+
+        // 所有操作完成后，如果成功写入了源码，自动导航到图的工作区
+        if (hasWriteSourceSuccess) {
+          this.context.onAutoNavigate?.();
+        }
       } else {
+        // 纯文本响应：流结束后直接替换为永久消息
+        this.context.onStreamingContent?.('', true);
+
         this.messages.push({
           id: this.nextId(),
           role: 'assistant',
           content: response.content,
           timestamp: Date.now(),
         });
-        this.context.onMessage(response.content);
       }
 
       this.context.onStatusChange('idle');
     } catch (err) {
+      // 发生错误时终止流
+      this.context.onStreamingContent?.('', true);
+
       if ((err as Error).name === 'AbortError') {
         this.context.onStatusChange('idle');
         return;

@@ -443,6 +443,7 @@ export function App() {
   );
   const [fitRequest, setFitRequest] = useState(0);
   const [resetRequest, setResetRequest] = useState(0);
+  const [aiOpen, setAiOpen] = useState(false);
   const previewShellRef = useRef<HTMLDivElement>(null);
   const text = messages[locale];
 
@@ -1437,14 +1438,6 @@ export function App() {
       ) : null}
 
       <main className="workspace">
-        <AIPanel
-          diagramType={diagramType}
-          erInputMode={erInputMode}
-          source={source}
-          setSource={setSource}
-          setDiagramType={chooseDiagramType}
-          setErInputMode={chooseErInputMode}
-        />
         <section className="editor-panel" aria-labelledby="editorTitle">
           <div className="panel-header">
             <div>
@@ -1506,7 +1499,10 @@ export function App() {
         </section>
 
         <section className="preview-panel" aria-labelledby="previewTitle">
-          <div className="panel-header preview-header">
+          <div className="panel-header preview-header" style={{ position: 'relative' }}>
+            <button className={`ai-header-btn${aiOpen ? ' is-active' : ''}`} onClick={() => setAiOpen((v) => !v)} type="button" title="AI 助手">
+              <span className="ai-header-btn-text">AI</span>
+            </button>
             <div>
               <p className="eyebrow">{text.livePreview}</p>
               <h2 id="previewTitle">{adapter.previewTitle}</h2>
@@ -1532,6 +1528,17 @@ export function App() {
               <button className="fullscreen-button" onClick={() => void toggleFullscreen()} type="button">
                 {isFullscreen ? text.exitFullscreen : text.fullscreen}
               </button>
+            </div>
+            <div className={`ai-dialog-wrapper${aiOpen ? '' : ' ai-hidden'}`}>
+              <AIPanel
+                diagramType={diagramType}
+                erInputMode={erInputMode}
+                source={source}
+                setSource={setSource}
+                setDiagramType={chooseDiagramType}
+                setErInputMode={chooseErInputMode}
+                onClose={() => setAiOpen(false)}
+              />
             </div>
           </div>
 

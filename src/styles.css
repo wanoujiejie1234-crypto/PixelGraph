@@ -406,7 +406,7 @@ h3 {
 .workspace {
   min-height: 0;
   display: grid;
-  grid-template-columns: auto minmax(360px, 0.82fr) minmax(560px, 1.18fr);
+  grid-template-columns: minmax(360px, 0.42fr) minmax(560px, 0.58fr);
   gap: 14px;
 }
 
@@ -432,6 +432,7 @@ h3 {
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 14px;
 }
+
 
 .panel-header {
   display: flex;
@@ -2698,6 +2699,56 @@ textarea {
   color: var(--note);
   font-size: 0.86rem;
   text-align: right;
+}
+
+/* AI 标题栏按钮 */
+.ai-header-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.78rem;
+  color: var(--accent);
+  padding: 0 8px;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.ai-header-btn:hover {
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  border-color: var(--accent);
+}
+
+.ai-header-btn.is-active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/* AI 对话框：从标题栏下方弹出 */
+.ai-dialog-wrapper {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  padding: 8px 0 0;
+  animation: aiDropDown 0.18s ease-out;
+}
+
+.ai-dialog-wrapper.ai-hidden {
+  display: none;
+}
+
+@keyframes aiDropDown {
+  from { transform: translateY(-4px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
 }
 
 .workspace-status {

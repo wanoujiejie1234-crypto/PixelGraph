@@ -43,6 +43,10 @@ export interface AgentContext {
   setErInputMode: (mode: ErInputMode) => void;
   onStatusChange: (status: AgentStatus) => void;
   onMessage: (content: string) => void;
+  /** 流式输出回调：每次收到 token 时调用，isFinal=true 表示流结束 */
+  onStreamingContent?: (chunk: string, isFinal: boolean) => void;
+  /** 自动跳转到图的工作区（写入源码后折叠 AI 面板） */
+  onAutoNavigate?: () => void;
   /** agent 内部跟踪的下一个图类型（switchDiagram 刚执行但 React state 未刷新时使用） */
   _pendingDiagramType?: DiagramType;
   _pendingErInputMode?: ErInputMode;

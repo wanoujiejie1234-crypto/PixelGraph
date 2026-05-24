@@ -12,6 +12,7 @@ interface AIPanelProps {
   setSource: (source: string) => void;
   setDiagramType: (type: DiagramType) => void;
   setErInputMode: (mode: ErInputMode) => void;
+  onClose?: () => void;
 }
 
 export function AIPanel({
@@ -21,8 +22,8 @@ export function AIPanel({
   setSource,
   setDiagramType,
   setErInputMode,
+  onClose,
 }: AIPanelProps) {
-  const [isOpen, setIsOpen] = useState(true);
   const [status, setStatus] = useState<string>('idle');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -31,6 +32,7 @@ export function AIPanel({
   const agentRef = useRef<DiagramAgent | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const streamBufferRef = useRef('');
 
   const TEXT_EXTS = new Set([
     // 代码 / 配置
@@ -135,6 +137,40 @@ export function AIPanel({
           },
         ]);
       },
+      onStreamingContent: (chunk: string, isFinal: boolean) => {
+        if (isFinal) {
+          // 流结束：将临时流消息转为永久消息
+          setMessages((prev) => {
+            const idx = prev.findIndex((m) => m.id === '__streaming__');
+            if (idx < 0) return prev;
+            const updated = [...prev];
+            updated[idx] = { ...updated[idx], id: `msg_${Date.now()}` };
+            return updated;
+          });
+          streamBufferRef.current = '';
+          return;
+        }
+        // 流进行中：累积内容并更新临时消息
+        streamBufferRef.current += chunk;
+        setMessages((prev) => {
+          const idx = prev.findIndex((m) => m.id === '__streaming__');
+          if (idx >= 0) {
+            const updated = [...prev];
+            updated[idx] = { ...updated[idx], content: streamBufferRef.current };
+            return updated;
+          }
+          return [
+            ...prev,
+            {
+              id: '__streaming__',
+              role: 'assistant' as const,
+              content: streamBufferRef.current,
+              timestamp: Date.now(),
+            },
+          ];
+        });
+      },
+      onAutoNavigate: () => onClose?.(),
     }),
     [setSource, setDiagramType, setErInputMode],
   );
@@ -164,15 +200,8 @@ export function AIPanel({
     agentRef.current = null;
     setStatus('idle');
     setFiles([]);
+    streamBufferRef.current = '';
   }, []);
-
-  if (!isOpen) {
-    return (
-      <button className="ai-toggle" onClick={() => setIsOpen(true)} type="button" title="打开 AI 助手">
-        AI
-      </button>
-    );
-  }
 
   const formatFileSize = (bytes: number): string => {
     if (bytes < 1024) return `${bytes} B`;
@@ -189,7 +218,7 @@ export function AIPanel({
         <button className="ai-clear-btn" onClick={clearChat} type="button" title="新对话">
           ＋
         </button>
-        <button className="ai-close-btn" onClick={() => setIsOpen(false)} type="button" title="收起">
+        <button className="ai-close-btn" onClick={() => onClose?.()} type="button" title="收起">
           −
         </button>
       </div>
@@ -202,7 +231,7 @@ export function AIPanel({
           </div>
         ) : (
           messages.map((msg) => (
-            <div key={msg.id} className={`ai-message ${msg.role}`}>
+            <div key={msg.id} className={`ai-message ${msg.role}${msg.id === '__streaming__' ? ' is-streaming' : ''}`}>
               {msg.files?.length ? (
                 <div className="ai-msg-files">
                   {msg.files.map((f) => (
