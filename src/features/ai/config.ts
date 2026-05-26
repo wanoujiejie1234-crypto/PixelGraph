@@ -6,6 +6,6 @@ import type { AiProviderConfig } from './types';
  */
 export const AI_CONFIG: AiProviderConfig = {
   endpoint: 'https://api.deepseek.com/v1',
-  apiKey: 'sk-0fcb54e1d2dd4c98bfdf440e6265ede3',
+  apiKey: 'your api-key',
   model: 'deepseek-chat',
 };
